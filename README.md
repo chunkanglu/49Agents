@@ -56,6 +56,10 @@ cd 49Agents
 
 Open `http://localhost:1071`. No account, no login, no token.
 
+Sharing a self-hosted instance with teammates over Tailscale — host setup,
+adding other people's machines, the security model, and the failure modes worth
+knowing: **[TAILNET.md](TAILNET.md)**.
+
 Don't want to self-host? **[49agents.com](https://app.49agents.com)**
 ![tutorial](https://github.com/user-attachments/assets/776a96c7-35ae-495a-8c15-ee847b3dcd57)
 
