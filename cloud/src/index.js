@@ -90,6 +90,18 @@ app.use(
         frameSrc: ["'self'", "https:"],  // Iframe panes
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
+        // helmet merges these directives with its defaults, which include
+        // `upgrade-insecure-requests`. That rewrites every http:// subresource
+        // to https://, which is fine on http://localhost (browsers treat it as
+        // a trustworthy origin and skip the upgrade) but breaks the app on any
+        // other plain-HTTP origin: served over a LAN or tailnet address, every
+        // script is requested as https://<host>:1071/... , the server speaks
+        // only HTTP, the handshake fails, and the page loads with no JS at all.
+        // Disabling it keeps self-hosted access over a private network usable.
+        // Trade-off: such an origin is still not a secure context, so
+        // navigator.clipboard (agent-ui.js, editors.js) stays unavailable
+        // there. Front it with TLS if you want the full feature set.
+        upgradeInsecureRequests: null,
       },
     },
     crossOriginEmbedderPolicy: false, // Allow embedding iframes in the canvas
