@@ -151,10 +151,16 @@ async function startTtyd(tmuxSession) {
   const port = getAvailablePort();
 
   return new Promise((resolve, reject) => {
+    // TMUX, not a bare 'tmux': a non-default instance keeps its sessions on its
+    // own socket (`tmux -L <instance>`, see instance.js getTmuxCommand). Spawning
+    // ttyd with the bare command makes it attach on the DEFAULT socket, where the
+    // session does not exist, so tmux exits at once and the terminal dies with
+    // WebSocket 1006 the moment a browser attaches — a pane that opens and
+    // instantly closes, with the session sitting healthy on the other socket.
     const ttyd = spawn('ttyd', [
       '-p', String(port),
       '-W',
-      'tmux', 'attach-session', '-t', tmuxSession,
+      ...TMUX.split(' '), 'attach-session', '-t', tmuxSession,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
