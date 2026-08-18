@@ -546,11 +546,62 @@ export class TmuxService {
     const session = escapeShellArg(terminal.tmuxSession);
     const direction = lines < 0 ? 'scroll-up' : 'scroll-down';
     const count = Math.min(Math.abs(lines), 15);
+
+    // A full-screen app (Claude Code, vim, less) draws on the terminal's
+    // alternate screen, for which tmux keeps NO scrollback. Entering copy-mode
+    // over one is a trap: there is nothing to scroll to, so `copy-mode -e` parks
+    // the pane in mode at scroll_position 0 and the -e auto-exit never fires
+    // because that only triggers on reaching the bottom, which it never left.
+    // The pane then shows a frozen snapshot and swallows keystrokes into
+    // copy-mode — the app looks hung, and stays hung until somebody happens to
+    // scroll down far enough to trip the auto-exit.
+    let alternateOn = '0';
+    let mouseAny = '0';
     try {
-      // Enter copy-mode with -e (auto-exit at bottom), then scroll
+      const { stdout } = await execAsync(
+        `${TMUX} display-message -t ${session} -p '#{alternate_on} #{mouse_any_flag}' 2>/dev/null`
+      );
+      [alternateOn = '0', mouseAny = '0'] = stdout.trim().split(/\s+/);
+    } catch {
+      // Cannot read pane state — fall through to the copy-mode path below,
+      // which is correct for a normal shell pane.
+    }
+
+    if (alternateOn === '1') {
+      // Forward the wheel to the application when it has asked for mouse
+      // reporting; it owns its own scrollback and knows what to do. SGR encoding
+      // (CSI < 64 = wheel up, 65 = wheel down), sent as raw bytes so this stays
+      // a tmux-only change.
+      if (mouseAny === '1') {
+        const button = lines < 0 ? '36 34' : '36 35';
+        const bytes = `1b 5b 3c ${button} 3b 31 3b 31 4d`;
+        for (let i = 0; i < count; i++) {
+          try {
+            await execAsync(`${TMUX} send-keys -t ${session} -H ${bytes} 2>/dev/null`);
+          } catch {
+            break;
+          }
+        }
+      }
+      // No mouse reporting and no scrollback: there is nothing correct to do, so
+      // do nothing. Freezing the pane is worse than ignoring the gesture.
+      return;
+    }
+
+    try {
+      // Normal pane: copy-mode is right, and -e auto-exits at the bottom.
       await execAsync(`${TMUX} copy-mode -e -t ${session} 2>/dev/null || true`);
       for (let i = 0; i < count; i++) {
         await execAsync(`${TMUX} send-keys -t ${session} -X ${direction}`);
+      }
+      // Belt and braces: if we ended up back at the bottom, leave copy-mode
+      // rather than trusting -e, so a pane is never left parked in mode.
+      const { stdout } = await execAsync(
+        `${TMUX} display-message -t ${session} -p '#{pane_in_mode} #{scroll_position}' 2>/dev/null`
+      );
+      const [inMode, position] = stdout.trim().split(/\s+/);
+      if (inMode === '1' && (position === '0' || position === '')) {
+        await execAsync(`${TMUX} send-keys -t ${session} -X cancel 2>/dev/null || true`);
       }
     } catch {
       // Scroll might fail if terminal is detached
