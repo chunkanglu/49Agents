@@ -231,11 +231,14 @@ export function createMessageRouter(sendToRelay, options = {}) {
     },
 
     [MSG.TERMINAL_RESIZE]: (payload) => {
-      terminalManager.resizeTerminal(payload.terminalId, payload.cols, payload.rows, payload.pixelWidth, payload.pixelHeight);
+      // Returned so handleMessage's try/catch actually covers it. Without the
+      // return it awaits undefined, the real promise escapes, and one stale
+      // terminal id from a reconnecting browser kills the agent.
+      return terminalManager.resizeTerminal(payload.terminalId, payload.cols, payload.rows, payload.pixelWidth, payload.pixelHeight);
     },
 
     [MSG.TERMINAL_SCROLL]: (payload) => {
-      terminalManager.scrollTerminal(payload.terminalId, payload.lines);
+      return terminalManager.scrollTerminal(payload.terminalId, payload.lines);
     },
 
     [MSG.TERMINAL_CLOSE]: async (payload) => {

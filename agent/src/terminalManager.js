@@ -426,15 +426,18 @@ export const terminalManager = {
       conn.ttydWs.send(msg);
     }
 
-    // Also resize the tmux pane (and persist pixel size if provided)
-    tmuxService.resizeTerminal(terminalId, cols, rows, pixelWidth, pixelHeight);
+    // Also resize the tmux pane (and persist pixel size if provided).
+    // Returned, not fired and forgotten: an unreturned promise escapes the
+    // try/catch in messageRouter's handleMessage, and an unhandled rejection
+    // terminates the agent process under Node's default settings.
+    return tmuxService.resizeTerminal(terminalId, cols, rows, pixelWidth, pixelHeight);
   },
 
   /**
    * Scroll a terminal via tmux copy-mode
    */
   scrollTerminal(terminalId, lines) {
-    tmuxService.scrollTerminal(terminalId, lines);
+    return tmuxService.scrollTerminal(terminalId, lines);
   },
 
   /**
