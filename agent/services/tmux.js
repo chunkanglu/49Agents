@@ -34,6 +34,29 @@ function truncateOutput(output) {
   return output.slice(startIndex);
 }
 
+// Ceiling on a single terminal:history payload, in bytes before base64.
+// The relay caps WebSocket frames at 1MB (cloud/src/ws/relay.js) and closes the
+// socket with 1009 on anything larger — so an oversized history does not just
+// fail to render, it drops the agent's connection. Panes are created with
+// history-limit 50000, and a -e capture of a busy pane already measures over
+// 500KB, so this is a live ceiling rather than a theoretical one. 512KB raw is
+// ~683KB base64, leaving room for the JSON envelope.
+const MAX_HISTORY_BYTES = 512 * 1024;
+
+// Trim a history capture to MAX_HISTORY_BYTES, keeping the NEWEST content.
+// Cuts at a newline: that is both the only boundary the scrollback can be split
+// on without severing an escape sequence, and a safe UTF-8 boundary. Emits a
+// reset first because the attribute state at an arbitrary cut point is unknown.
+function capHistoryBytes(history) {
+  const buf = Buffer.from(history, 'utf-8');
+  if (buf.length <= MAX_HISTORY_BYTES) return history;
+
+  let slice = buf.subarray(buf.length - MAX_HISTORY_BYTES);
+  const nl = slice.indexOf(0x0a);
+  if (nl !== -1) slice = slice.subarray(nl + 1);
+  return '\x1b[0m' + slice.toString('utf-8');
+}
+
 // Get local hostname
 let localHostname = 'localhost';
 try {
@@ -480,16 +503,23 @@ export class TmuxService {
 
       // -p = print to stdout, -S - = from start of history, -E -1 = stop
       // before the visible screen (ttyd sends the live screen naturally).
-      // Intentionally no -e: that flag injects tmux cursor-positioning sequences
-      // (\e[H, \e[?25h/l, \e[J etc.) that aren't part of the original pty
-      // stream. Replaying them in xterm.js corrupts cursor position and leaves
-      // stale '_' glyphs at the start of lines throughout the scrollback.
+      //
+      // -e preserves the SGR attributes, which is the difference between
+      // restored scrollback that still has its colour and bold and scrollback
+      // that comes back as flat monochrome text. The comment this replaces
+      // claimed -e also injects cursor positioning (\e[H, \e[?25h/l, \e[J).
+      // Measured against live Claude and pi panes on tmux 3.5, that is not true
+      // of the history region: a -e capture of 109KB of pi output contained SGR
+      // and nothing else — zero cursor-position, erase, OSC or DCS sequences.
+      // messageRouter strips those defensively regardless, so a tmux build that
+      // does emit them still cannot corrupt the replay.
+      //
       // maxBuffer raised to 10MB — default 1MB silently truncates long histories
       const { stdout } = await execAsync(
-        `${TMUX} capture-pane -t ${escapeShellArg(terminal.tmuxSession)} -p -S - -E -1`,
+        `${TMUX} capture-pane -e -t ${escapeShellArg(terminal.tmuxSession)} -p -S - -E -1`,
         { maxBuffer: 10 * 1024 * 1024, timeout: 3000 }
       );
-      return stdout;
+      return capHistoryBytes(stdout);
     } catch {
       return '';
     }
