@@ -834,18 +834,34 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
 
   // Deferred output buffer — only used when selection is active or mouse is held
   const termDeferredBuffers = new Map(); // terminalId -> Uint8Array[]
+  const termDeferStarted = new Map(); // terminalId -> ms timestamp the defer began
   let deferFlushPending = false;
+
+  // Hard time limit on holding output back for a selection.
+  //
+  // hasSelection() stays true until something clears the selection, and nothing
+  // in the scroll path does. Without a deadline, selecting text in a pane and
+  // then scrolling silently parks every subsequent byte in the defer buffer: the
+  // pane looks frozen on a half-drawn frame, scrolling looks broken because no
+  // new content ever lands, and the only escape is the byte cap below — which
+  // then writes ~512KB of a repainting TUI's interleaved frames in one blob, so
+  // the pane recovers into garbled and duplicated output. That is the whole
+  // reported failure, and a page refresh "fixes" it only because a fresh xterm
+  // has no selection. Losing the selection after a second is the cheaper cost.
+  const MAX_DEFER_MS = 1000;
 
   function flushDeferredOutputs() {
     deferFlushPending = false;
     for (const [terminalId, chunks] of termDeferredBuffers) {
       if (chunks.length === 0) continue;
       const termInfo = terminals.get(terminalId);
-      if (!termInfo) { chunks.length = 0; continue; }
+      if (!termInfo) { chunks.length = 0; termDeferStarted.delete(terminalId); continue; }
       if (terminalMouseDown || termInfo.xterm.hasSelection()) {
-        // Still selecting — cap at 512KB to prevent memory bloat
+        // Still selecting — hold, but only up to 512KB and only for
+        // MAX_DEFER_MS, so a selection nobody clears cannot wedge the pane.
         const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
-        if (totalLen < 524288) {
+        const startedAt = termDeferStarted.get(terminalId) || Date.now();
+        if (totalLen < 524288 && Date.now() - startedAt < MAX_DEFER_MS) {
           if (!deferFlushPending) {
             deferFlushPending = true;
             requestAnimationFrame(flushDeferredOutputs);
@@ -853,6 +869,7 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
           continue;
         }
       }
+      termDeferStarted.delete(terminalId);
       const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
       const merged = new Uint8Array(totalLen);
       let offset = 0;
@@ -877,6 +894,7 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
         buf = [];
         termDeferredBuffers.set(terminalId, buf);
       }
+      if (!termDeferStarted.has(terminalId)) termDeferStarted.set(terminalId, Date.now());
       buf.push(data);
       if (!deferFlushPending) {
         deferFlushPending = true;
@@ -896,6 +914,7 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
         offset += chunk.length;
       }
       deferred.length = 0;
+      termDeferStarted.delete(terminalId);
       termInfo.xterm.write(merged);
     }
 
