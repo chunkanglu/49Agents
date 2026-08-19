@@ -497,7 +497,14 @@ export class TmuxService {
 
   async resizeTerminal(terminalId, cols, rows, pixelWidth, pixelHeight) {
     const terminal = terminals.get(terminalId);
-    if (!terminal) throw new Error('Terminal not found');
+    // A browser that reconnects resizes every pane it remembers, including ones
+    // whose session is gone, so an unknown id here is routine rather than
+    // exceptional. Tolerate it the way scrollTerminal already does: the rest of
+    // this method treats a failed resize as non-fatal too.
+    if (!terminal) {
+      console.warn(`[tmux] resize ignored for unknown terminal ${String(terminalId).slice(0, 8)}`);
+      return;
+    }
 
     try {
       const validCols = validatePositiveInt(cols, 500);
