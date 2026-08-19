@@ -25,6 +25,7 @@ const placementLabels = {
   'note': 'Note',
   'git-graph': 'Git Graph',
   'iframe': 'Web Page',
+  'browser': 'Browser',
   'beads': 'Beads Issues',
   'folder': 'Folder',
   'conversations': 'Conversations',

@@ -12,6 +12,7 @@ export const PANE_DEFAULTS = {
   'note':           { width: 400, height: 250 },
   'git-graph':      { width: 500, height: 450 },
   'iframe':         { width: 800, height: 600 },
+  'browser':        { width: 900, height: 640 },
   'beads':          { width: 520, height: 500 },
   'folder':         { width: 400, height: 500 },
   'conversations':  { width: 520, height: 500 },
@@ -19,7 +20,7 @@ export const PANE_DEFAULTS = {
 
 export const PANE_ENDPOINT_MAP = {
   file: 'file-panes', note: 'notes', terminal: 'terminals',
-  'git-graph': 'git-graphs', iframe: 'iframes',
+  'git-graph': 'git-graphs', iframe: 'iframes', browser: 'browser-panes',
   beads: 'beads-panes', folder: 'folder-panes',
   conversations: 'conversations-panes',
 };
