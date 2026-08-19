@@ -87,7 +87,16 @@ app.use(
         imgSrc: ["'self'", "data:", "blob:", "https:"],
         connectSrc: ["'self'", "ws:", "wss:"],
         workerSrc: ["'self'", "blob:"],  // Monaco web workers
-        frameSrc: ["'self'", "https:"],  // Iframe panes
+        // Iframe panes. http: belongs here for the same reason
+        // upgrade-insecure-requests is disabled below: this app is reachable
+        // over plain HTTP. createIframePane prefixes a bare hostname with
+        // http://, and local dev servers are http://localhost:PORT, so an
+        // https-only frame-src blocks the common cases outright — the browser
+        // never even issues the request, and the pane renders blank with no
+        // error in the UI. Note these two settings are coupled: while
+        // upgrade-insecure-requests was in force it silently rewrote http://
+        // frame URLs to https://, so an https-only frame-src appeared to work.
+        frameSrc: ["'self'", "https:", "http:"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         // helmet merges these directives with its defaults, which include
