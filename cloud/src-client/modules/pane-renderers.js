@@ -16,6 +16,7 @@ import { setupPaneListeners } from './pane-interaction.js';
 import { setupImageButtonHandlers, setupTextOnlyToggle } from './editors.js';
 import { calcPlacementPos } from './minimap.js';
 import { clearPaneRefresh } from './pane-refresh.js';
+import { promptForUrl } from './modals.js';
 
 let _ctx = null;
 
@@ -470,7 +471,7 @@ export function setupIframeListeners(paneEl, paneData) {
 
   editUrlBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    let newUrl = prompt('Enter new URL:', paneData.url);
+    let newUrl = await promptForUrl({ title: 'Edit URL', initialValue: paneData.url, confirmLabel: 'Save' });
     if (!newUrl || !newUrl.trim() || newUrl.trim() === paneData.url) return;
     newUrl = newUrl.trim();
     if (!/^https?:\/\//i.test(newUrl)) newUrl = 'http://' + newUrl;

@@ -14,6 +14,7 @@ import { clearTerminalNotificationState } from './notifications.js';
 import { renderGitGraphPane } from './git-graph.js';
 import { renderCheckpointPane, renderProjectRectangles, startProjectsSidebarRefresh } from './projects.js';
 import { collapsePane, createBeadsPane, createFolderPane, renderBeadsPane, renderFolderPane, renderIframePane, renderNotePane } from './pane-renderers.js';
+import { promptForUrl } from './modals.js';
 
 let _ctx = null;
 
@@ -1191,7 +1192,10 @@ export async function showGitRepoPicker(device, placementPos, thenPlace = false,
 
 // Create a new iframe pane
 export async function createIframePane(placementPos) {
-  let url = prompt('Enter URL to embed:');
+  // In-page input rather than window.prompt: a suppressed prompt() returns
+  // null, which is indistinguishable from a cancel here, so the placement
+  // click did nothing at all — no pane, no error. See modules/modals.js.
+  let url = await promptForUrl({ title: 'Embed a web page', confirmLabel: 'Add pane' });
   if (!url || !url.trim()) return;
   url = url.trim();
 
