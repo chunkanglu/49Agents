@@ -139,6 +139,11 @@ export function renderOfflinePlaceholder(paneData) {
     case 'iframe':
       titleHtml = `🌐 ${escapeHtml(paneData.url ? truncateUrl(paneData.url) : 'Web')}`;
       break;
+    case 'browser': {
+      const activeTab = (paneData.tabs || []).find(t => t.active);
+      titleHtml = `🌐 ${escapeHtml(activeTab ? truncateUrl(activeTab.title || activeTab.url) : 'Browser')}`;
+      break;
+    }
     case 'note':
       titleHtml = `${deviceTag}📝 Note`;
       break;

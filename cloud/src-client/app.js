@@ -22,7 +22,8 @@ import { initTabGroupsDeps, getTabGroupPanes, getActiveTabPane, switchTab, syncT
 import { initConnectionDeps, updateConnectionStatus, findOnlineAgentForDevice, setDisconnectOverlay, renderOfflinePlaceholder } from './modules/connection.js';
 import { initCloudDeps, cloudFetch, cloudSaveLayout, saveRecentContext, fetchRecentContexts, showRecentsOrBrowse, cloudDeleteLayout, cloudSaveViewState, cloudSaveNote } from './modules/cloud.js';
 import { initPlacementDeps, isPlacementActive, enterPlacementMode, cancelPlacementMode, showDevicePickerThenPlace, openFileWithDevicePickerThenPlace, showGitRepoPickerWithDeviceThenPlace, renderConversationsPane, showConversationsDirPickerThenPlace, showFolderPaneDevicePickerThenPlace, showBeadsRepoPickerWithDeviceThenPlace } from './modules/placement.js';
-import { initPaneCreationDeps, createPane, deletePane, createNotePane, createIframePane, createIframePaneWithUrl, createGitGraphPane, createFilePaneFromRemote, createCustomSelect, loadPanesFromAgent, loadTerminalsFromServer, openFileWithDevicePicker, resumeTerminalPane, showDevicePicker, showDevicePickerGeneric, showFileBrowser, showFolderScanPicker, showGitRepoPicker, showGitRepoPickerWithDevice, createBrowserOverlay, attachPickerKeyboardNav } from './modules/pane-creation.js';
+import { initPaneCreationDeps, createPane, deletePane, createNotePane, createIframePane, createBrowserPane, createIframePaneWithUrl, createGitGraphPane, createFilePaneFromRemote, createCustomSelect, loadPanesFromAgent, loadTerminalsFromServer, openFileWithDevicePicker, resumeTerminalPane, showDevicePicker, showDevicePickerGeneric, showFileBrowser, showFolderScanPicker, showGitRepoPicker, showGitRepoPickerWithDevice, createBrowserOverlay, attachPickerKeyboardNav } from './modules/pane-creation.js';
+import { initBrowserPaneDeps, renderBrowserPane, drawBrowserFrame, updateBrowserTabs, destroyBrowserPane } from './modules/browser-pane.js';
 import { initRenderersDeps, expandPane, collapsePane, renderNotePane, initNoteMonaco, refreshNoteImages, renderMarkdownPreview, renderIframePane, setupIframeListeners, showIframeOverlays, hideIframeOverlays, createFolderPane, createBeadsPane, renderBeadsPane, renderFolderPane, setupBeadsListeners, fetchBeadsData, applyBeadsFilters } from './modules/pane-renderers.js';
 import { initPaneInteractionDeps, applyPaneZoom, setupPaneListeners, findSnapTargets, findResizeSnapTargets, updateSnapGuide, showSnapGuides, removeSnapGuides, startDrag, startResizeHold, activateResize } from './modules/pane-interaction.js';
 import { initHudDeps, createHudContainer, toggleHudHidden, applyPaneVisibility, checkAutoHideHud, applyNoHudMode, createHud, pollHud, restartHudPolling, renderHud, clearDeviceHighlight, createAgentsHud, createChatHud, fetchAgentsUsage, renderAgentsHud, applyTerminalTheme, updateHudDotColor, getHudExpanded, setHudExpanded, getAgentsHudExpanded, setAgentsHudExpanded, getFeedbackHudExpanded, setFeedbackHudExpanded, getHudHidden, setHudHidden, getFleetPaneHidden, setFleetPaneHidden, getAgentsPaneHidden, setAgentsPaneHidden, getDeviceColorOverrides, setDeviceColorOverrides, getHudData, setHoveredDeviceName, startHudRenderTimer, startAgentsUsagePolling, stopAgentsUsagePolling } from './modules/hud.js';
@@ -1400,7 +1401,7 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
       attachTerminal, cloudDeleteLayout, cloudFetch, cloudSaveLayout, cloudSaveNote,
       deviceLabelHtml, enterPlacementMode, findOnlineAgentForDevice, focusPane,
       getDevicesFromAgents, getPaneAgentId, refreshBeadsTagStatus, refreshTabBars,
-      renderConversationsPane, renderFilePane, renderOfflinePlaceholder,
+      destroyBrowserPane, renderBrowserPane, renderConversationsPane, renderFilePane, renderOfflinePlaceholder,
       renderPane, saveRecentContext,
       setDisconnectOverlay, updateBroadcastIndicator, updateCanvasTransform,
       updateClaudeStates, updateConnectionStatus,
@@ -1425,6 +1426,12 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
       getActiveAgentId: () => activeAgentId,
       getExpandedPaneId: () => expandedPaneId,
       setExpandedPaneId: (v) => { expandedPaneId = v; },
+    });
+    initBrowserPaneDeps({
+      state,
+      getCanvas: () => canvas,
+      getTabHeld: () => tabHeld,
+      getNextShortcutNumber, paneNameHtml, shortcutBadgeHtml,
     });
     initPaneInteractionDeps({
       state, dragState, terminals, selectedPaneIds, fileEditors, noteEditors,
@@ -1486,7 +1493,7 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
       state,
       selectedPaneIds, terminals, fileEditors, noteEditors,
       // Pane creation, entered from the add-pane menu
-      createNotePane, createIframePane, createIframePaneWithUrl,
+      createNotePane, createIframePane, createIframePaneWithUrl, createBrowserPane,
       createCheckpointPane, startProjectCreation, enterPlacementMode,
       showDevicePickerThenPlace, openFileWithDevicePickerThenPlace,
       showGitRepoPickerWithDeviceThenPlace, showBeadsRepoPickerWithDeviceThenPlace,
@@ -1723,6 +1730,32 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
           const decoded = Uint8Array.from(atob(payload.data), c => c.charCodeAt(0));
           writeTermOutput(payload.terminalId, decoded);
         }
+        break;
+
+      case 'browser:frame':
+        // Fire-and-forget: decoding is async and frames are independent, so
+        // awaiting here would serialise decode behind the message loop.
+        drawBrowserFrame(payload.paneId, payload.data);
+        break;
+
+      case 'browser:tabs':
+        updateBrowserTabs(payload.paneId, payload.tabs, payload.activeTabId);
+        break;
+
+      case 'browser:attached': {
+        // The pane may have been restored from the layout before the agent
+        // knew its tabs; the attach reply is the first authoritative list.
+        const paneData = state.panes.find(p => p.id === payload.paneId);
+        if (paneData && payload.pane) {
+          paneData.tabs = payload.pane.tabs;
+          paneData.activeTabId = payload.pane.activeTabId;
+          updateBrowserTabs(payload.paneId, payload.pane.tabs, payload.pane.activeTabId);
+        }
+        break;
+      }
+
+      case 'browser:error':
+        console.error('[Browser pane]', payload.paneId?.slice(0, 8), payload.message);
         break;
 
       case 'terminal:error':

@@ -51,6 +51,8 @@ export function setupAddPaneMenu() {
         (url) => _ctx.enterPlacementMode('iframe', (pos) => _ctx.createIframePaneWithUrl(url, pos)),
         () => _ctx.enterPlacementMode('iframe', (pos) => _ctx.createIframePane(pos))
       );
+    } else if (type === 'browser') {
+      _ctx.enterPlacementMode('browser', (pos) => _ctx.createBrowserPane(pos));
     } else if (type === 'beads') {
       _ctx.showBeadsRepoPickerWithDeviceThenPlace();
     } else if (type === 'folder') {
@@ -229,6 +231,10 @@ export function setupMobileNavDrawer() {
     if (p.type === 'note') return 'Note';
     if (p.type === 'git-graph') return p.repoName || 'Git Graph';
     if (p.type === 'iframe') return p.url ? new URL(p.url).hostname : 'Browser';
+    if (p.type === 'browser') {
+      const active = (p.tabs || []).find(t => t.active);
+      return active && active.title ? active.title : 'Browser';
+    }
     if (p.type === 'beads') return 'Beads';
     if (p.type === 'folder') return (p.folderPath || '').split('/').pop() || 'Folder';
     return 'Terminal';
