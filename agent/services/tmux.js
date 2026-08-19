@@ -57,6 +57,29 @@ function capHistoryBytes(history) {
   return '\x1b[0m' + slice.toString('utf-8');
 }
 
+// Let modified keys through to the application, in the encoding it expects.
+//
+// Both of these are tmux SERVER options, so one call configures every pane on
+// this instance's socket. They must be set before the application in the pane
+// negotiates its keyboard mode, because the negotiation happens once at startup:
+// flipping them under a running Claude Code or pi changes nothing until it is
+// restarted.
+//
+//   extended-keys on          tmux otherwise reports Shift+Enter as a bare \r,
+//                             so a TUI that treats Shift+Enter as "insert a
+//                             newline" sees a submit and sends a half-written
+//                             prompt. This is the reported bug.
+//   extended-keys-format csi-u  the wire format tmux uses for those keys.
+//                             Verified against both Claude Code and pi, each of
+//                             which accepts \e[13;2u and inserts a newline; pi
+//                             additionally asks for csi-u by name at startup
+//                             ("Warning: tmux extended-keys-format is xterm.
+//                             Pi works best with csi-u").
+async function applyModifiedKeySupport() {
+  await execAsync(`${TMUX} set-option -s extended-keys on 2>/dev/null || true`);
+  await execAsync(`${TMUX} set-option -s extended-keys-format csi-u 2>/dev/null || true`);
+}
+
 // Get local hostname
 let localHostname = 'localhost';
 try {
@@ -361,6 +384,7 @@ export class TmuxService {
         // mouse mode intentionally OFF — see createTerminal comment
         await execAsync(`${TMUX} set-option -t ${escapeShellArg(session)} mouse off 2>/dev/null || true`);
         await execAsync(`${TMUX} set-option -t ${escapeShellArg(session)} history-limit 50000 2>/dev/null || true`);
+        await applyModifiedKeySupport();
       }
 
       this.persistState();
@@ -401,6 +425,7 @@ export class TmuxService {
     // NOTE: mouse mode intentionally OFF — it disables xterm.js text selection.
     // Scroll-through-history is handled by forwarding wheel events as SGR sequences from the client.
     await execAsync(`${TMUX} set-option -t ${escapeShellArg(sessionName)} history-limit 50000 2>/dev/null || true`);
+    await applyModifiedKeySupport();
 
     const terminal = {
       id,
@@ -435,6 +460,7 @@ export class TmuxService {
     await execAsync(`${TMUX} new-session -d -s ${escapeShellArg(sessionName)} -c ${escapeShellArg(validatedDir)}`);
     await execAsync(`${TMUX} set-option -t ${escapeShellArg(sessionName)} status off 2>/dev/null || true`);
     await execAsync(`${TMUX} set-option -t ${escapeShellArg(sessionName)} history-limit 50000 2>/dev/null || true`);
+    await applyModifiedKeySupport();
 
     // Run command if provided (e.g. claude --resume <id>)
     if (command) {
