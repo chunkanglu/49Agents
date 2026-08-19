@@ -1,0 +1,131 @@
+# Running this fork on a Tailscale tailnet
+
+Notes for sharing a self-hosted instance with teammates over a tailnet, and the
+changes in this fork that make that work. Written from getting it running on
+macOS 26 with pi/Claude Code agents; every failure mode listed below is one that
+actually happened, with the symptom it presented as.
+
+## What this fork changes
+
+Four commits on top of upstream. All four exist because self-hosting on anything
+other than `localhost` hits a wall:
+
+| Change | Why |
+|---|---|
+| Drop `upgrade-insecure-requests` from the CSP | helmet adds it by default. On a plain-HTTP origin that is not localhost, the browser rewrites every script request to `https://`, the server only speaks HTTP, and the page loads with **no JavaScript at all**. |
+| `tailnet.env` + a hook in `load_config()` | Derives the bind address and the agent's URL per machine, so nobody edits an IP. Fails closed on loopback when there is no tailnet, instead of inheriting the `0.0.0.0` default. |
+| ttyd attaches on the instance's tmux socket | A non-default instance keeps sessions on `tmux -L <instance>`, but ttyd was spawned with a bare `tmux`, so it attached on the default socket where the session does not exist. Panes opened and closed instantly. |
+| ttyd binds `127.0.0.1` | Without `-i`, every pane's writable terminal listened on every interface. Nothing remote needs them — the agent is ttyd's only client. |
+
+## Prerequisites
+
+- Tailscale, signed in, on every participating machine.
+- `tmux` and `ttyd` on any machine running an **agent**. `./49ctl setup` checks
+  for both. On macOS: `brew install tmux ttyd`.
+- Node 22 (`.nvmrc`).
+
+## Host setup (one machine serves the canvas)
+
+```bash
+git clone -b csp-allow-plain-http-origins git@github.com:chunkanglu/49Agents.git
+cd 49Agents
+./49ctl setup        # 1) single machine, accept the default port 1071
+./49ctl start
+```
+
+`start` and `status` print the URL to share — the machine's own tailnet address,
+resolved at run time:
+
+```
+Cloud   running  PID 49078  http://100.x.y.z:1071
+Agent   running  PID 49164  ws://100.x.y.z:1071
+```
+
+Send teammates either that address or the MagicDNS name
+(`http://<machine>.<tailnet>.ts.net:1071`). Note `http`, and the port is
+required.
+
+## Teammates joining (browser only)
+
+Nothing to install and nothing to configure: open the URL on any device on the
+tailnet. They see the same canvas, panes, and terminals, and can drive the
+agents running on the host machine.
+
+## Adding a teammate's machine (multi-machine)
+
+Their machine runs an **agent** that connects to the host's server, so panes can
+execute on their hardware. On their machine:
+
+```bash
+git clone -b csp-allow-plain-http-origins git@github.com:chunkanglu/49Agents.git
+cd 49Agents
+./49ctl setup        # 2) multi machine, then 2) agent only
+                     # cloud URL: ws://<host>.<tailnet>.ts.net:1071
+./49ctl start
+```
+
+`tailnet.env` deliberately leaves `AGENT_CLOUD_URL` alone when `RUN_CLOUD` is
+not `true`, so the address entered here survives.
+
+**Read the security section before doing this.** With the current auth model,
+connecting an agent grants a shell on *that* machine to anyone who can reach the
+host's port — the person adding their machine is taking on the risk, and they
+cannot see the host's exposure from their side.
+
+## Security model, stated plainly
+
+`tailnet.env` sets `SKIP_CLOUD_AUTH=1`, which keeps the instance standalone: no
+49agents.com account, no cloud token stored, no egress. Without it the agent
+refuses to start until you sign in through their cloud
+(`cloud/src/auth/agentAuth.js:84`).
+
+The cost is that **there is no per-person login**. Every request is
+auto-authenticated as a single `dev-user`, so anyone who can reach
+`<host>:1071` gets a terminal as the user running the server. The trust
+boundary is the tailnet and its ACLs, not the application.
+
+What follows from that:
+
+- Prefer a scratch host over a work laptop. A laptop with production
+  credentials, SSO sessions, or an SSH agent is a poor thing to put behind an
+  unauthenticated shell, however short the demo.
+- Scope tailnet ACLs to named devices. A tailnet usually contains tagged
+  infrastructure as well as people.
+- Stop it when you are done: `./49ctl stop`. Do not leave it listening between
+  sessions.
+- The main server is pinned to the tailnet interface, and ttyd to loopback, so
+  joining a café or client network does not publish anything. That only holds
+  while `tailnet.env` is in use.
+
+HTTPS would fix the secure-context gap (clipboard APIs stay unavailable over
+plain HTTP), and `tailscale serve --bg --https=443 127.0.0.1:1071` is the way to
+get it — but it needs HTTPS enabled for the tailnet in the admin console, which
+is an admin action. Without a cert, plain HTTP is the only option, which is why
+the CSP change is required rather than cosmetic.
+
+## Operating notes
+
+- **After every `git pull`, rebuild the client**: `cd cloud && npm run build`.
+  The bundles are gitignored and generated by npm's `prestart` hook, which
+  `49ctl` bypasses by running `node cloud/src/index.js` directly. Skipping this
+  gives a dead page with 404s on `themes.min.js` and friends.
+- **`./49ctl setup` rewrites `.49agents/config`** from four variables. Anything
+  hand-added there is lost. `tailnet.env` is a separate file for exactly this
+  reason, so re-running setup is safe.
+- **Killing the server leaves ttyd behind.** `pkill ttyd` before a restart if
+  panes misbehave.
+- **The host's laptop sleeping takes the canvas down.** Expected, not a bug.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Page loads but nothing works, no JS | CSP `upgrade-insecure-requests` on a non-localhost HTTP origin | Included in this fork; if reintroduced, check `cloud/src/index.js` helmet block |
+| Page dead, 404s on `*.min.js` | Client bundles never built | `cd cloud && npm run build` |
+| Agent exits at startup, "Local instance not authenticated with cloud" | No `local_auth` row and no `SKIP_CLOUD_AUTH` | `tailnet.env` sets it; otherwise sign in via app.49agents.com once |
+| `49ctl status` says the agent is running but it never appears | Agent dialling an address the server is not bound to — repeating WS close 1006 | Make `AGENT_CLOUD_URL` match `HOST`; `tailnet.env` does this |
+| Pane opens then closes immediately | ttyd attaching on the wrong tmux socket; `Invalid WebSocket frame: invalid status code 1006` in the agent log | Fixed in this fork; verify with `tmux -L <instance> ls` |
+| Nothing reachable from other devices | No tailnet address found, so the bind failed closed to `127.0.0.1` | Check the `[tailnet.env]` warning at startup; start Tailscale and restart |
+
+Logs live in `.49agents/cloud.log` and `.49agents/agent.log`; `./49ctl logs`
+tails both.

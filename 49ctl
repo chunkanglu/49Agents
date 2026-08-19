@@ -103,6 +103,14 @@ load_config() {
   RUN_AGENT="${RUN_AGENT:-true}"
   CLOUD_PORT="${CLOUD_PORT:-1071}"
   AGENT_CLOUD_URL="${AGENT_CLOUD_URL:-ws://localhost:$CLOUD_PORT}"
+
+  # Derive the tailnet bind address and matching agent URL, if this machine is
+  # on a tailnet. Sourced last so it can override the defaults above, and kept
+  # in a separate file because `setup` rewrites CONFIG_FILE from scratch.
+  if [ -f "$SCRIPT_DIR/tailnet.env" ]; then
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/tailnet.env"
+  fi
 }
 
 save_config() {
@@ -267,7 +275,7 @@ cmd_start() {
   if [ "$RUN_CLOUD" = "true" ]; then
     local cpid
     cpid=$(read_pid "$CLOUD_PID_FILE" 2>/dev/null || echo "?")
-    echo -e "  Cloud  ${CYAN}http://localhost:${CLOUD_PORT}${NC}  ${DIM}(PID ${cpid})${NC}"
+    echo -e "  Cloud  ${CYAN}http://${HOST:-localhost}:${CLOUD_PORT}${NC}  ${DIM}(PID ${cpid})${NC}"
   fi
   if [ "$RUN_AGENT" = "true" ]; then
     local apid
@@ -387,7 +395,7 @@ cmd_status() {
   if [ "$RUN_CLOUD" = "true" ]; then
     local cpid
     if cpid=$(read_pid "$CLOUD_PID_FILE" 2>/dev/null); then
-      echo -e "  Cloud   ${GREEN}running${NC}  PID ${cpid}  http://localhost:${CLOUD_PORT}"
+      echo -e "  Cloud   ${GREEN}running${NC}  PID ${cpid}  http://${HOST:-localhost}:${CLOUD_PORT}"
     else
       echo -e "  Cloud   ${RED}stopped${NC}"
     fi

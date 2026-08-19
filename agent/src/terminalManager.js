@@ -159,6 +159,14 @@ async function startTtyd(tmuxSession) {
     // instantly closes, with the session sitting healthy on the other socket.
     const ttyd = spawn('ttyd', [
       '-p', String(port),
+      // Loopback only. ttyd otherwise binds every interface, putting one
+      // writable-terminal listener per pane on whatever network this machine is
+      // attached to. Nothing remote needs them: the browser never talks to ttyd,
+      // it talks to the cloud server, and the agent proxies terminal traffic
+      // over that relay — so the sole client is connectToTtyd() below, on this
+      // host. Explicit 127.0.0.1 on both sides rather than the name 'localhost',
+      // which can resolve to ::1 and would then miss a v4-only listener.
+      '-i', '127.0.0.1',
       '-W',
       ...TMUX.split(' '), 'attach-session', '-t', tmuxSession,
     ], {
@@ -224,7 +232,9 @@ function stopAllTtyd() {
  */
 function connectToTtyd(port, cols, rows, attempt = 1) {
   return new Promise((resolve, reject) => {
-    const ttydUrl = `ws://localhost:${port}/ws`;
+    // 127.0.0.1, matching the -i flag in startTtyd(): 'localhost' can resolve to
+    // ::1 first, which no longer has a listener now that ttyd is v4 loopback-only.
+    const ttydUrl = `ws://127.0.0.1:${port}/ws`;
     const ttydWs = new WebSocket(ttydUrl, ['tty']);
     ttydWs.binaryType = 'arraybuffer';
 
