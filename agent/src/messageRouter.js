@@ -5,6 +5,7 @@ import { filePaneService } from '../services/filePanes.js';
 import { noteService } from '../services/notes.js';
 import { gitGraphService } from '../services/gitGraph.js';
 import { iframeService } from '../services/iframes.js';
+import { browserPaneService } from '../services/browserPanes.js';
 import { beadsService } from '../services/beads.js';
 import { conversationsService } from '../services/conversations.js';
 import { folderPaneService } from '../services/folderPanes.js';
@@ -249,7 +250,77 @@ export function createMessageRouter(sendToRelay, options = {}) {
       terminalManager.detachTerminal(payload.terminalId);
       sendToRelay('terminal:detached', { terminalId: payload.terminalId });
     },
+
+    // ── Browser panes ─────────────────────────────────────────────────────
+    // Every handler returns its promise. An unreturned async handler rejects
+    // outside handleMessage's try/catch, which is an unhandled rejection and
+    // takes the whole agent process down — the same bug that killed the agent
+    // on a stale terminal id.
+
+    [MSG.BROWSER_ATTACH]: async (payload) => {
+      const pane = await browserPaneService.attach(payload.paneId, {
+        width: payload.width,
+        height: payload.height,
+        deviceScaleFactor: payload.deviceScaleFactor,
+      });
+      sendToRelay(MSG.BROWSER_ATTACHED, { paneId: payload.paneId, pane });
+    },
+
+    [MSG.BROWSER_DETACH]: (payload) => browserPaneService.detach(payload.paneId),
+
+    [MSG.BROWSER_RESIZE]: (payload) =>
+      browserPaneService.setViewport(
+        payload.paneId,
+        payload.width,
+        payload.height,
+        payload.deviceScaleFactor
+      ),
+
+    [MSG.BROWSER_NAVIGATE]: (payload) => browserPaneService.navigate(payload.paneId, payload.url),
+
+    [MSG.BROWSER_TAB_NEW]: (payload) => browserPaneService.newTab(payload.paneId, payload.url),
+
+    [MSG.BROWSER_TAB_CLOSE]: (payload) =>
+      browserPaneService.closeTab(payload.paneId, payload.tabId),
+
+    [MSG.BROWSER_TAB_SELECT]: (payload) =>
+      browserPaneService.selectTab(payload.paneId, payload.tabId),
+
+    [MSG.BROWSER_HISTORY]: (payload) => {
+      if (payload.action === 'back') return browserPaneService.goBack(payload.paneId);
+      if (payload.action === 'forward') return browserPaneService.goForward(payload.paneId);
+      return browserPaneService.reload(payload.paneId);
+    },
+
+    [MSG.BROWSER_INPUT]: (payload) => {
+      // One message type for all input keeps the client's event plumbing to a
+      // single send() and matches how terminal:input works.
+      if (payload.kind === 'mouse') return browserPaneService.dispatchMouse(payload.paneId, payload.event);
+      if (payload.kind === 'key') return browserPaneService.dispatchKey(payload.paneId, payload.event);
+      if (payload.kind === 'text') return browserPaneService.insertText(payload.paneId, payload.text);
+      return undefined;
+    },
   };
+
+  // Service events are pushed to every browser: a pane can be driven from more
+  // than one canvas at a time, and a tab opened on one should appear on both.
+  browserPaneService.on('frame', ({ paneId, tabId, data, metadata }) => {
+    sendToRelay(MSG.BROWSER_FRAME, { paneId, tabId, data, metadata });
+  });
+  browserPaneService.on('tabs', ({ paneId, tabs, activeTabId }) => {
+    sendToRelay(MSG.BROWSER_TABS, { paneId, tabs, activeTabId });
+  });
+  browserPaneService.on('error', ({ paneId, message }) => {
+    sendToRelay(MSG.BROWSER_ERROR, { paneId, message });
+  });
+  browserPaneService.on('dialog', ({ paneId, type, message }) => {
+    // Surfaced rather than swallowed: the page asked something and got an
+    // automatic Cancel, which the user is entitled to know about.
+    sendToRelay(MSG.BROWSER_ERROR, {
+      paneId,
+      message: `Page dialog dismissed (${type}): ${String(message).slice(0, 200)}`,
+    });
+  });
 
   /**
    * Handle REST-over-WS requests: dispatches by method + path to service functions.
@@ -441,6 +512,22 @@ export function createMessageRouter(sendToRelay, options = {}) {
           const { url, position, size } = body;
           const iframe = iframeService.createIframe({ url, position, size });
           return respond(200, iframe);
+        }
+
+        // === Browser panes ===
+        case 'GET /api/browser-panes': {
+          return respond(200, browserPaneService.listPanes());
+        }
+        case 'POST /api/browser-panes': {
+          const { url, position, size, profileDir } = body;
+          try {
+            const pane = await browserPaneService.createPane({ url, position, size, profileDir });
+            return respond(200, pane);
+          } catch (error) {
+            // A rejected scheme is the user's typo, not a server fault, and the
+            // UI shows this message verbatim.
+            return respond(400, { error: error.message });
+          }
         }
 
         // === Beads ===
@@ -710,6 +797,23 @@ export function createMessageRouter(sendToRelay, options = {}) {
         }
         if (method === 'DELETE') {
           iframeService.deleteIframe(id);
+          return respond(200, { success: true });
+        }
+      }
+
+      // Browser pane routes: PATCH/DELETE /api/browser-panes/:id
+      const browserPaneMatch = path.match(/^\/api\/browser-panes\/([^/]+)$/);
+      if (browserPaneMatch) {
+        const id = browserPaneMatch[1];
+        if (method === 'PATCH') {
+          const pane = await browserPaneService.patchPane(id, {
+            position: body.position,
+            size: body.size,
+          });
+          return respond(200, pane);
+        }
+        if (method === 'DELETE') {
+          await browserPaneService.closePane(id);
           return respond(200, { success: true });
         }
       }

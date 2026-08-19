@@ -6,6 +6,8 @@ import { getLocalMetrics } from '../services/metrics.js';
 import { MSG } from './protocol.js';
 import { config } from './config.js';
 import { loadToken } from './auth.js';
+import { browserPaneService } from '../services/browserPanes.js';
+import { stopAllChrome } from '../services/chrome.js';
 
 let relayClient = null;
 let statePollingInterval = null;
@@ -137,6 +139,12 @@ export async function startAgent(options = {}) {
   const terminals = await tmuxService.discoverExistingTerminals();
   console.log(`[Agent] Discovered ${terminals.length} existing terminal(s)`);
 
+  // Browser panes come back as records only. Chrome is started lazily on the
+  // first attach, so restoring a canvas full of them costs nothing until they
+  // are actually looked at.
+  const browserPanes = browserPaneService.restore();
+  if (browserPanes.length) console.log(`[Agent] Restored ${browserPanes.length} browser pane(s)`);
+
   // Create relay client
   relayClient = new RelayClient(cloudUrl, token);
 
@@ -190,6 +198,9 @@ export async function startAgent(options = {}) {
     stopStatePolling();
     stopMetricsPolling();
     terminalManager.stopAll();
+    // Chrome does not die with its parent, so an un-stopped one survives the
+    // agent and holds its profile lock — the next start then fails to launch.
+    stopAllChrome();
     if (relayClient) {
       relayClient.disconnect();
     }
