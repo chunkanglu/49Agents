@@ -44,6 +44,10 @@ const PANE_TYPES = [
     defPos: { x: 100, y: 100 }, defSize: PANE_DEFAULTS['iframe'],
     extraFields: (f) => ({ url: f.url }),
     render: renderIframePane },
+  { type: 'browser', endpoint: '/api/browser-panes',
+    defPos: { x: 100, y: 100 }, defSize: PANE_DEFAULTS['browser'],
+    extraFields: (b) => ({ tabs: b.tabs || [], activeTabId: b.activeTabId || null }),
+    render: (p) => _ctx.renderBrowserPane(p) },
   { type: 'beads', endpoint: '/api/beads-panes',
     defPos: { x: 100, y: 100 }, defSize: PANE_DEFAULTS['beads'],
     extraFields: (b) => ({ projectPath: b.projectPath, device: b.device || null }),
@@ -1190,6 +1194,42 @@ export async function showGitRepoPicker(device, placementPos, thenPlace = false,
   });
 }
 
+// Create a browser pane — a real Chrome rendered into the canvas.
+// No URL prompt: the pane opens blank with its own address bar, which is what
+// a browser does. The iframe pane asks up front because it has nowhere else to
+// put the question.
+export async function createBrowserPane(placementPos) {
+  const position = calcPlacementPos(placementPos, PANE_DEFAULTS['browser'].width, PANE_DEFAULTS['browser'].height);
+
+  try {
+    const data = await agentRequest('POST', '/api/browser-panes', {
+      url: 'about:blank',
+      position,
+      size: PANE_DEFAULTS['browser'],
+    });
+
+    const pane = {
+      id: data.id,
+      type: 'browser',
+      x: data.position.x,
+      y: data.position.y,
+      width: data.size.width,
+      height: data.size.height,
+      zIndex: _ctx.state.nextZIndex++,
+      tabs: data.tabs || [],
+      activeTabId: data.activeTabId || null,
+      agentId: _ctx.getActiveAgentId(),
+    };
+
+    _ctx.state.panes.push(pane); _ctx.telemetry.trackPaneOpen(pane);
+    _ctx.renderBrowserPane(pane);
+    _ctx.cloudSaveLayout(pane);
+  } catch (e) {
+    console.error('[App] Failed to create browser pane:', e);
+    alert('Failed to create browser pane: ' + e.message);
+  }
+}
+
 // Create a new iframe pane
 export async function createIframePane(placementPos) {
   // In-page input rather than window.prompt: a suppressed prompt() returns
@@ -1337,6 +1377,13 @@ export async function deletePane(paneId) {
       // never produces again.
       _ctx.claudeTerminalIds.delete(paneId);
       clearTerminalNotificationState(paneId);
+    } else if (paneType === 'browser') {
+      // Detach first so the agent stops screencasting immediately; the DELETE
+      // then closes the tabs and drops this pane's reference to Chrome, which
+      // shuts the process down once no pane is left on that profile.
+      sendWs('browser:detach', { paneId }, pane?.agentId);
+      _ctx.destroyBrowserPane(paneId);
+      agentRequest('DELETE', `/api/browser-panes/${paneId}`, null, pane?.agentId).catch(() => {});
     } else if (paneType === 'file') {
       // Check for unsaved changes
       const editorInfo = _ctx.fileEditors.get(paneId);
