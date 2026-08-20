@@ -44,3 +44,26 @@ test('surrounding whitespace is trimmed', () => {
 test('unparseable input reports itself rather than becoming a search', () => {
   assert.throws(() => normaliseUrl('http://['), /Not a valid URL/);
 });
+
+test('host:port is a host and a port, not a scheme', () => {
+  // The reported bug: "localhost:3000" matched a naive scheme regex, so the
+  // pane refused to open the single most common thing anyone would type.
+  assert.equal(normaliseUrl('localhost:3000'), 'http://localhost:3000/');
+  assert.equal(normaliseUrl('127.0.0.1:8080/app'), 'http://127.0.0.1:8080/app');
+});
+
+test('local addresses default to http, public ones to https', () => {
+  // A dev server or a box on the LAN or tailnet is almost never serving TLS,
+  // and guessing https there fails the handshake instead of loading the page.
+  assert.equal(normaliseUrl('localhost'), 'http://localhost/');
+  assert.equal(normaliseUrl('192.168.1.10:3000'), 'http://192.168.1.10:3000/');
+  assert.equal(normaliseUrl('100.67.102.37:1071'), 'http://100.67.102.37:1071/');
+  assert.equal(normaliseUrl('mybox.local'), 'http://mybox.local/');
+  assert.equal(normaliseUrl('example.com'), 'https://example.com/');
+  assert.equal(normaliseUrl('example.com:8443'), 'https://example.com:8443/');
+});
+
+test('an explicit scheme still wins over the local guess', () => {
+  assert.equal(normaliseUrl('https://localhost:3000'), 'https://localhost:3000/');
+  assert.equal(normaliseUrl('http://example.com'), 'http://example.com/');
+});
