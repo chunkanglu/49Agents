@@ -138,12 +138,36 @@ export class BrowserPaneService extends EventEmitter {
     return this.listPanes();
   }
 
+  /**
+   * Coalesce persistence. Navigation events arrive in bursts, and rewriting the
+   * whole state file per redirect is wasted IO for a file only read at startup.
+   */
+  _schedulePersist() {
+    if (this._persistTimer) return;
+    this._persistTimer = setTimeout(() => {
+      this._persistTimer = null;
+      this.persist();
+    }, 1000);
+    // Never hold the process open for a save that can be redone on next launch.
+    this._persistTimer.unref?.();
+  }
+
   persist() {
     const panes = [];
     for (const pane of this.panes.values()) {
       const tabs = pane.tabs.size
         ? [...pane.tabs.entries()].map(([, tab]) => ({ url: tab.url, title: tab.title }))
         : pane.savedTabs || [];
+
+      // Keep the in-memory fallback in step with what is being written.
+      // savedTabs used to be frozen at creation, so any path that fell back to
+      // it — a pane whose Chrome had gone away, a re-attach before the tabs
+      // were reopened — resurrected about:blank and threw away the real URLs,
+      // even though the file on disk was correct.
+      if (pane.tabs.size) {
+        pane.savedTabs = tabs;
+        pane.savedActiveIndex = Math.max(0, [...pane.tabs.keys()].indexOf(pane.activeTabId));
+      }
       const activeIndex = pane.tabs.size
         ? Math.max(0, [...pane.tabs.keys()].indexOf(pane.activeTabId))
         : pane.savedActiveIndex || 0;
@@ -409,6 +433,18 @@ export class BrowserPaneService extends EventEmitter {
     });
 
     await pane.chrome.cdp.send('Page.enable', {}, sessionId).catch(() => {});
+
+    // Chrome does not composite a target that is not the foreground window, so
+    // a screencast on one yields nothing and the pane freezes on whatever it
+    // last showed. Page.bringToFront fixes the selected tab and breaks every
+    // other pane — measured: foregrounding one pane took the other from a live
+    // stream to 0 frames in 4s, because panes share a browser process.
+    //
+    // Focus emulation is the way out: it makes each target behave as focused
+    // independently, which is how Playwright keeps several pages live at once.
+    await pane.chrome.cdp
+      .send('Emulation.setFocusEmulationEnabled', { enabled: true }, sessionId)
+      .catch(() => {});
     pane.tabs.set(targetId, { sessionId, url, title: url });
 
     if (activate) {
@@ -421,8 +457,39 @@ export class BrowserPaneService extends EventEmitter {
   async _activate(pane, tabId) {
     if (pane.activeTabId && pane.activeTabId !== tabId) await this._stopScreencast(pane);
     pane.activeTabId = tabId;
+
     await this._applyViewport(pane, tabId);
-    if (pane.attached) await this._startScreencast(pane);
+    if (pane.attached) {
+      await this._startScreencast(pane);
+      // A page that is not repainting emits nothing, and a tab switch has to
+      // repaint by definition — the viewer is looking at different content.
+      // One explicit capture guarantees the first frame instead of waiting for
+      // the page to happen to change.
+      await this._captureOnce(pane);
+    }
+  }
+
+  /**
+   * Push a single frame immediately, independent of the screencast.
+   * Used where the pane must change what it shows even though the page itself
+   * is static: switching tabs, and re-attaching to an idle page.
+   */
+  async _captureOnce(pane) {
+    const tab = pane.tabs.get(pane.activeTabId);
+    if (!tab) return;
+    try {
+      const shot = await pane.chrome.cdp.send(
+        'Page.captureScreenshot',
+        { format: 'jpeg', quality: SCREENCAST.quality, captureBeyondViewport: false },
+        tab.sessionId
+      );
+      if (shot?.data) {
+        pane.lastEmitAt = Date.now();
+        this.emit('frame', { paneId: pane.id, tabId: pane.activeTabId, data: shot.data, metadata: {} });
+      }
+    } catch {
+      // Not fatal: the screencast still delivers as soon as the page paints.
+    }
   }
 
   async _applyViewport(pane, tabId) {
@@ -519,6 +586,12 @@ export class BrowserPaneService extends EventEmitter {
       tab.url = targetInfo.url;
       tab.title = targetInfo.title || targetInfo.url;
       this._emitTabs(pane);
+      // Navigation is the only way a tab's URL ever changes, and without this
+      // the file keeps the URL the tab was CREATED with — so a pane restored
+      // after an agent restart came back as about:blank having lost wherever
+      // you had browsed to. Debounced because this fires several times per page
+      // load (each redirect, each title change).
+      this._schedulePersist();
     });
 
     // A page opened with target=_blank or window.open becomes a new target
