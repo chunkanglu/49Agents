@@ -96,6 +96,67 @@ Updates are delivered in-app: click the tray icon and choose **Check for Updates
 - [x] **Real tmux sessions** via ttyd — full ANSI color, scrollback, your shell config
 - [x] **Broadcast input** — type once, send keystrokes to multiple terminals simultaneously
 
+### Browser panes
+
+A real Chrome running on the agent's machine, streamed into the canvas — the
+same relationship a terminal pane has with tmux. It exists because **web page
+panes are an `<iframe>`, and most sites refuse to be framed**: `github.com`
+sends `x-frame-options: deny`, `google.com` and `app.shortcut.com` send
+`SAMEORIGIN`. Those are the remote site's headers, so nothing on this end can
+change them. A browser pane is not framing anything, so it is not subject to it.
+
+- [x] **Tabs**, an address bar, back / forward / reload
+- [x] **Shared view** — everyone on the canvas sees the same page, like a terminal
+- [x] **Its own profile**, so logins persist across restarts without touching your
+      everyday browser
+- [x] **Survives an agent restart** — the browser is adopted, tabs and all
+
+Requires Google Chrome, Chromium, Edge or Brave on the agent's machine
+(`CHROME_BIN` overrides the search).
+
+#### Which pane should I use?
+
+| | Web page pane | Browser pane |
+|---|---|---|
+| Renders in | your browser, as an iframe | Chrome on the host, streamed as JPEG |
+| Session | your cookies and logins | the pane's own profile |
+| Fidelity | native text, zero bandwidth | a video of a page, ~1 MB/s while loading |
+| Works on | only sites that permit framing | anything |
+| Other viewers see | their own private copy | the same view as you |
+
+#### Known limitations
+
+- **Bandwidth.** Frames are JPEG at up to 20fps, roughly 1 MB/s per pane while a
+  page loads. An idle page costs nothing — a page that is not repainting sends
+  no frames at all — but several busy panes add up, and every viewer pays for
+  every pane.
+- **Not native text.** The page is an image. Browser-native find-in-page,
+  spellcheck, and text selection you can copy out of the pane do not exist;
+  selection inside the page works, but the clipboard round trip does not.
+- **No context menu.** Chrome's right-click menu is browser UI, not page
+  content, so it is not in the stream. Right-click reaches the page, so a site
+  that draws its own menu works; everything else shows nothing.
+- **JavaScript dialogs are auto-dismissed.** There is nowhere to show an
+  `alert()`, and an unanswered dialog blocks the renderer, so `confirm()` always
+  reads as Cancel.
+- **No downloads or audio.**
+- **Two viewers share one viewport.** Chrome is rendered at one size, and the
+  last client to resize wins. The other viewer sees a stretched image, and their
+  clicks land off-target by the ratio between the two pane sizes.
+- **Panes do not re-attach after an agent restart** until the page is reloaded.
+- **Board zoom does not re-render.** Zooming in magnifies the existing frames
+  rather than asking Chrome for sharper ones.
+
+#### Security
+
+The debugging port Chrome exposes is unauthenticated and amounts to full control
+of that browser — arbitrary JavaScript, cookies, `file://` reads — so it is
+pinned to `127.0.0.1` and the agent is its only client; frames reach the canvas
+over the existing relay. Panes default to a dedicated profile under the agent's
+state directory rather than your everyday Chrome profile, because anyone who can
+reach the canvas can drive these panes. `file:` and `javascript:` URLs are
+refused.
+
 ### Multi-Machine
 
 - [x] **Zero SSH** — connect agents from any machine to one canvas
