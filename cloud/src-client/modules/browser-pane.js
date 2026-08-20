@@ -54,10 +54,37 @@ export async function drawBrowserFrame(paneId, base64Data) {
     bitmap.close();
     entry.loadingEl?.remove();
     entry.loadingEl = null;
+    // Frames are arriving again, so whatever the last failure said is no
+    // longer true.
+    entry.canvas.parentElement?.querySelector('.browser-error')?.remove();
   } catch {
     // A corrupt frame is not worth tearing the pane down for; the next one
     // repaints the whole viewport anyway.
   }
+}
+
+/**
+ * Replace the loading overlay with the reason nothing is coming. Only for
+ * errors that end the pane's session — a transient one would clear itself on
+ * the next frame, and overwriting a working view with an error would be worse
+ * than saying nothing.
+ */
+export function showBrowserPaneError(paneId, message) {
+  const entry = browserPanes.get(paneId);
+  if (!entry) return;
+  const content = entry.canvas.parentElement;
+  if (!content) return;
+
+  entry.loadingEl?.remove();
+  entry.loadingEl = null;
+
+  let errorEl = content.querySelector('.browser-error');
+  if (!errorEl) {
+    errorEl = document.createElement('div');
+    errorEl.className = 'browser-loading browser-error';
+    content.appendChild(errorEl);
+  }
+  errorEl.textContent = message;
 }
 
 export function updateBrowserTabs(paneId, tabs, activeTabId) {

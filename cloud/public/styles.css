@@ -7538,3 +7538,14 @@ body.cursor-suppressed .pane { pointer-events: none !important; }
   font-size: 12px;
   pointer-events: none;
 }
+
+/* A launch that failed: same slot as the loading overlay, wrapped and
+   selectable so the reason can be read and copied. */
+.browser-error {
+  padding: 0 24px;
+  text-align: center;
+  color: rgba(255, 140, 140, 0.9);
+  white-space: pre-wrap;
+  pointer-events: auto;
+  user-select: text;
+}

@@ -23,7 +23,7 @@ import { initConnectionDeps, updateConnectionStatus, findOnlineAgentForDevice, s
 import { initCloudDeps, cloudFetch, cloudSaveLayout, saveRecentContext, fetchRecentContexts, showRecentsOrBrowse, cloudDeleteLayout, cloudSaveViewState, cloudSaveNote } from './modules/cloud.js';
 import { initPlacementDeps, isPlacementActive, enterPlacementMode, cancelPlacementMode, showDevicePickerThenPlace, openFileWithDevicePickerThenPlace, showGitRepoPickerWithDeviceThenPlace, renderConversationsPane, showConversationsDirPickerThenPlace, showFolderPaneDevicePickerThenPlace, showBeadsRepoPickerWithDeviceThenPlace } from './modules/placement.js';
 import { initPaneCreationDeps, createPane, deletePane, createNotePane, createIframePane, createBrowserPane, createIframePaneWithUrl, createGitGraphPane, createFilePaneFromRemote, createCustomSelect, loadPanesFromAgent, loadTerminalsFromServer, openFileWithDevicePicker, resumeTerminalPane, showDevicePicker, showDevicePickerGeneric, showFileBrowser, showFolderScanPicker, showGitRepoPicker, showGitRepoPickerWithDevice, createBrowserOverlay, attachPickerKeyboardNav } from './modules/pane-creation.js';
-import { initBrowserPaneDeps, renderBrowserPane, drawBrowserFrame, updateBrowserTabs, destroyBrowserPane } from './modules/browser-pane.js';
+import { initBrowserPaneDeps, renderBrowserPane, drawBrowserFrame, updateBrowserTabs, destroyBrowserPane, showBrowserPaneError } from './modules/browser-pane.js';
 import { initRenderersDeps, expandPane, collapsePane, renderNotePane, initNoteMonaco, refreshNoteImages, renderMarkdownPreview, renderIframePane, setupIframeListeners, showIframeOverlays, hideIframeOverlays, createFolderPane, createBeadsPane, renderBeadsPane, renderFolderPane, setupBeadsListeners, fetchBeadsData, applyBeadsFilters } from './modules/pane-renderers.js';
 import { initPaneInteractionDeps, applyPaneZoom, setupPaneListeners, findSnapTargets, findResizeSnapTargets, updateSnapGuide, showSnapGuides, removeSnapGuides, startDrag, startResizeHold, activateResize } from './modules/pane-interaction.js';
 import { initHudDeps, createHudContainer, toggleHudHidden, applyPaneVisibility, checkAutoHideHud, applyNoHudMode, createHud, pollHud, restartHudPolling, renderHud, clearDeviceHighlight, createAgentsHud, createChatHud, fetchAgentsUsage, renderAgentsHud, applyTerminalTheme, updateHudDotColor, getHudExpanded, setHudExpanded, getAgentsHudExpanded, setAgentsHudExpanded, getFeedbackHudExpanded, setFeedbackHudExpanded, getHudHidden, setHudHidden, getFleetPaneHidden, setFleetPaneHidden, getAgentsPaneHidden, setAgentsPaneHidden, getDeviceColorOverrides, setDeviceColorOverrides, getHudData, setHoveredDeviceName, startHudRenderTimer, startAgentsUsagePolling, stopAgentsUsagePolling } from './modules/hud.js';
@@ -1756,6 +1756,9 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
 
       case 'browser:error':
         console.error('[Browser pane]', payload.paneId?.slice(0, 8), payload.message);
+        // A fatal error means no frames are coming, so the loading overlay
+        // would otherwise stay up for ever claiming Chrome is starting.
+        if (payload.fatal) showBrowserPaneError(payload.paneId, payload.message);
         break;
 
       case 'terminal:error':

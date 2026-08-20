@@ -14,7 +14,7 @@
 // at launch — Chrome cannot switch --user-data-dir at runtime.
 
 import { spawn } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync } from 'fs';
 import { EventEmitter } from 'events';
 import { join } from 'path';
 
@@ -95,7 +95,63 @@ class ChromeInstance extends EventEmitter {
     this.profileDir = profileDir;
     this.proc = null;
     this.cdp = null;
+    this.adopted = false;
+    this.adoptedPid = null;
     this.refCount = 0;
+  }
+
+  /**
+   * The debugger endpoint of a Chrome already running on this profile.
+   *
+   * Chrome writes its OS-assigned port and browser path to DevToolsActivePort
+   * inside the profile, which is the only way to find an instance whose port we
+   * did not choose. Returns null when the file is absent or malformed.
+   */
+  _existingEndpoint() {
+    try {
+      const raw = readFileSync(join(this.profileDir, 'DevToolsActivePort'), 'utf-8').split('\n');
+      const port = parseInt(raw[0], 10);
+      const path = (raw[1] || '').trim();
+      if (!port || !path) return null;
+      return `ws://127.0.0.1:${port}${path}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Chrome refuses to start on a profile another Chrome holds, exiting 21 and
+   * printing nothing useful. The lock is three symlinks in the profile; they
+   * outlive a Chrome that was SIGKILLed, which is exactly what happens when
+   * `49ctl stop` escalates from TERM to KILL faster than the agent's shutdown
+   * handler runs.
+   *
+   * Only ever called once the endpoint has been proven dead, so no live browser
+   * can be unlocked out from under itself.
+   */
+  /**
+   * The pid Chrome recorded in SingletonLock, which is a symlink named
+   * `<host>-<pid>`. The only handle on a browser this process did not spawn.
+   */
+  _lockHolderPid() {
+    try {
+      const target = readlinkSync(join(this.profileDir, 'SingletonLock'));
+      const pid = parseInt(target.split('-').pop(), 10);
+      return Number.isInteger(pid) ? pid : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _clearStaleLock() {
+    for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'DevToolsActivePort']) {
+      try {
+        rmSync(join(this.profileDir, name), { force: true });
+      } catch {
+        // Best effort: a lock we cannot remove will simply fail the launch
+        // again, with the same clear error.
+      }
+    }
   }
 
   async start() {
@@ -107,9 +163,44 @@ class ChromeInstance extends EventEmitter {
     }
     if (!existsSync(this.profileDir)) mkdirSync(this.profileDir, { recursive: true });
 
+    // Adopt a Chrome that is already on this profile rather than fighting it.
+    // The common case is an agent restart: the old agent's Chrome survives
+    // (see _clearStaleLock), and adopting it means the panes come back with
+    // their tabs still open instead of the launch failing with exit 21.
+    const existing = this._existingEndpoint();
+    if (existing) {
+      try {
+        this.cdp = new CdpConnection(existing);
+        await this.cdp.connect();
+        this.adopted = true;
+        this.adoptedPid = this._lockHolderPid();
+        return this;
+      } catch {
+        // The file outlived the browser. Nothing is listening, so the lock
+        // beside it is stale too.
+        this.cdp = null;
+        this._clearStaleLock();
+      }
+    }
+
     this.proc = spawn(binary, buildChromeArgs(this.profileDir), { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    const wsUrl = await this._readDevToolsUrl();
+    let wsUrl;
+    try {
+      wsUrl = await this._readDevToolsUrl();
+    } catch (err) {
+      // Exit 21 is Chrome's "this profile is in use". Reaching here means the
+      // endpoint check above found nothing to adopt, so the holder is gone and
+      // the lock is stale; clear it and try once more.
+      if (/code 21/.test(err.message)) {
+        this._clearStaleLock();
+        this.proc = spawn(binary, buildChromeArgs(this.profileDir), { stdio: ['ignore', 'pipe', 'pipe'] });
+        wsUrl = await this._readDevToolsUrl();
+      } else {
+        throw err;
+      }
+    }
+
     this.cdp = new CdpConnection(wsUrl);
     await this.cdp.connect();
 
@@ -158,6 +249,18 @@ class ChromeInstance extends EventEmitter {
   }
 
   stop() {
+    // An adopted Chrome has no child handle, so it is killed by pid. Browser.close
+    // over CDP was the first attempt and loses the race: shutdown closes the
+    // socket and exits the process before the message flushes, leaving the
+    // orphan alive and the profile locked — the exact failure adoption exists
+    // to end. The pid is in the profile's SingletonLock, where Chrome puts it.
+    if (this.adopted && this.adoptedPid) {
+      try {
+        process.kill(this.adoptedPid);
+      } catch {
+        // Already gone, which is the desired state anyway.
+      }
+    }
     if (this.cdp) this.cdp.close();
     if (this.proc && this.proc.exitCode === null) this.proc.kill();
     this.cdp = null;

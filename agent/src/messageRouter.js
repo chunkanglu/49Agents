@@ -261,12 +261,22 @@ export function createMessageRouter(sendToRelay, options = {}) {
     // on a stale terminal id.
 
     [MSG.BROWSER_ATTACH]: async (payload) => {
-      const pane = await browserPaneService.attach(payload.paneId, {
-        width: payload.width,
-        height: payload.height,
-        deviceScaleFactor: payload.deviceScaleFactor,
-      });
-      sendToRelay(MSG.BROWSER_ATTACHED, { paneId: payload.paneId, pane });
+      try {
+        const pane = await browserPaneService.attach(payload.paneId, {
+          width: payload.width,
+          height: payload.height,
+          deviceScaleFactor: payload.deviceScaleFactor,
+        });
+        sendToRelay(MSG.BROWSER_ATTACHED, { paneId: payload.paneId, pane });
+      } catch (error) {
+        // Without this the pane sits on "Starting Chrome…" for ever and the
+        // only trace is a line in the agent log. A failed launch is the most
+        // likely thing to go wrong on a machine we do not control — no Chrome
+        // installed, a profile another browser holds — so it has to reach the
+        // screen.
+        console.error(`[Browser] Attach failed for ${payload.paneId?.slice(0, 8)}:`, error.message);
+        sendToRelay(MSG.BROWSER_ERROR, { paneId: payload.paneId, message: error.message, fatal: true });
+      }
     },
 
     [MSG.BROWSER_DETACH]: (payload) => browserPaneService.detach(payload.paneId),
