@@ -22,7 +22,7 @@ import { initTabGroupsDeps, getTabGroupPanes, getActiveTabPane, switchTab, syncT
 import { initConnectionDeps, updateConnectionStatus, findOnlineAgentForDevice, setDisconnectOverlay, renderOfflinePlaceholder } from './modules/connection.js';
 import { initCloudDeps, cloudFetch, cloudSaveLayout, saveRecentContext, fetchRecentContexts, showRecentsOrBrowse, cloudDeleteLayout, cloudSaveViewState, cloudSaveNote } from './modules/cloud.js';
 import { initPlacementDeps, isPlacementActive, enterPlacementMode, cancelPlacementMode, showDevicePickerThenPlace, openFileWithDevicePickerThenPlace, showGitRepoPickerWithDeviceThenPlace, renderConversationsPane, showConversationsDirPickerThenPlace, showFolderPaneDevicePickerThenPlace, showBeadsRepoPickerWithDeviceThenPlace } from './modules/placement.js';
-import { initPaneCreationDeps, createPane, deletePane, createNotePane, createIframePane, createBrowserPane, createIframePaneWithUrl, createGitGraphPane, createFilePaneFromRemote, createCustomSelect, loadPanesFromAgent, loadTerminalsFromServer, openFileWithDevicePicker, resumeTerminalPane, showDevicePicker, showDevicePickerGeneric, showFileBrowser, showFolderScanPicker, showGitRepoPicker, showGitRepoPickerWithDevice, createBrowserOverlay, attachPickerKeyboardNav } from './modules/pane-creation.js';
+import { initPaneCreationDeps, createPane, deletePane, createNotePane, createIframePane, createBrowserPane, createIframePaneWithUrl, createGitGraphPane, createFilePaneFromRemote, createCustomSelect, loadPanesFromAgent, adoptRemotePane, loadTerminalsFromServer, openFileWithDevicePicker, resumeTerminalPane, showDevicePicker, showDevicePickerGeneric, showFileBrowser, showFolderScanPicker, showGitRepoPicker, showGitRepoPickerWithDevice, createBrowserOverlay, attachPickerKeyboardNav } from './modules/pane-creation.js';
 import { initBrowserPaneDeps, renderBrowserPane, drawBrowserFrame, updateBrowserTabs, destroyBrowserPane } from './modules/browser-pane.js';
 import { initRenderersDeps, expandPane, collapsePane, renderNotePane, initNoteMonaco, refreshNoteImages, renderMarkdownPreview, renderIframePane, setupIframeListeners, showIframeOverlays, hideIframeOverlays, createFolderPane, createBeadsPane, renderBeadsPane, renderFolderPane, setupBeadsListeners, fetchBeadsData, applyBeadsFilters } from './modules/pane-renderers.js';
 import { initPaneInteractionDeps, applyPaneZoom, setupPaneListeners, findSnapTargets, findResizeSnapTargets, updateSnapGuide, showSnapGuides, removeSnapGuides, startDrag, startResizeHold, activateResize } from './modules/pane-interaction.js';
@@ -1757,6 +1757,31 @@ import { initProjectsDeps, navigateToProject, navigateToCheckpointPane, renderPr
       case 'browser:error':
         console.error('[Browser pane]', payload.paneId?.slice(0, 8), payload.message);
         break;
+
+      case 'pane:created':
+        // Someone else made a pane. Only act if this canvas does not have it —
+        // the creator gets it from its own response and must not render twice.
+        if (!state.panes.some(p => p.id === payload.paneId)) {
+          // The relay stamps agentId onto the message, not the payload
+          // (agentHandler.js:214), which is where an agent-forwarded message
+          // differs from a cloud-generated one like agent:online.
+          adoptRemotePane(message.agentId || payload.agentId);
+        }
+        break;
+
+      case 'pane:closed': {
+        // Without this the pane lingers on every other canvas: a terminal that
+        // is gone, or a browser pane frozen on its last frame, with no way to
+        // tell it is dead.
+        const gone = state.panes.find(p => p.id === payload.paneId);
+        if (gone) {
+          document.getElementById(`pane-${payload.paneId}`)?.remove();
+          state.panes = state.panes.filter(p => p.id !== payload.paneId);
+          if (gone.type === 'browser') destroyBrowserPane(payload.paneId);
+          selectedPaneIds.delete(payload.paneId);
+        }
+        break;
+      }
 
       case 'terminal:error':
         console.error('[WS] Terminal error:', payload.message);

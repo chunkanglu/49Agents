@@ -113,6 +113,47 @@ export async function loadPanesFromAgent(agentId, cloudLayoutMap) {
 }
 
 
+/**
+ * Render a pane somebody else just created, without disturbing anything already
+ * on this canvas.
+ *
+ * Reuses loadPanesFromAgent rather than building the pane from a pushed
+ * payload: that function already skips panes this client has, already prefers
+ * the cloud layout row for geometry, and is the same path used on load — so a
+ * pane that appears live is constructed identically to one that appears after a
+ * reload, instead of by a second code path that can drift.
+ *
+ * Debounced because a burst (someone placing several panes, or a reconnect
+ * replaying) should cost one round trip, not one per pane.
+ */
+let adoptTimer = null;
+const adoptAgents = new Set();
+export function adoptRemotePane(agentId) {
+  if (agentId) adoptAgents.add(agentId);
+  if (adoptTimer) return;
+  adoptTimer = setTimeout(async () => {
+    adoptTimer = null;
+    const agentIds = [...adoptAgents];
+    adoptAgents.clear();
+
+    let cloudLayoutMap = new Map();
+    try {
+      const cloudData = await _ctx.cloudFetch('GET', '/api/layouts');
+      if (cloudData.layouts) cloudLayoutMap = new Map(cloudData.layouts.map(l => [l.id, l]));
+    } catch {
+      // Without the layout rows the pane still renders, just at the position
+      // the agent recorded — better than not showing up at all.
+    }
+    for (const id of agentIds) {
+      try {
+        await loadPanesFromAgent(id, cloudLayoutMap);
+      } catch (e) {
+        console.warn('[Panes] Could not adopt panes from', id, e.message);
+      }
+    }
+  }, 250);
+}
+
 export async function loadTerminalsFromServer() {
   try {
     // Fetch cloud layouts FIRST so panes render with correct positions immediately

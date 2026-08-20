@@ -44,6 +44,10 @@ export const MSG = {
   BROWSER_HISTORY: 'browser:history',
   BROWSER_ERROR: 'browser:error',
 
+  // Pane lifecycle, broadcast to every canvas
+  PANE_CREATED: 'pane:created',
+  PANE_CLOSED: 'pane:closed',
+
   // Claude states
   CLAUDE_STATES: 'claude:states',
 

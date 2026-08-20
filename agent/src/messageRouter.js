@@ -86,6 +86,20 @@ function expandAndValidatePath(p) {
  * @param {Object} [options] - optional callbacks
  * @returns {Function} handler - function(message) to handle incoming messages
  */
+// Creation endpoints, and the pane type each one makes. Used to announce
+// creates and deletes to every connected canvas, not just the requester.
+const PANE_CREATE_PATHS = {
+  '/api/terminals': 'terminal',
+  '/api/file-panes': 'file',
+  '/api/notes': 'note',
+  '/api/git-graphs': 'git-graph',
+  '/api/iframes': 'iframe',
+  '/api/browser-panes': 'browser',
+  '/api/beads-panes': 'beads',
+  '/api/folder-panes': 'folder',
+  '/api/conversations-panes': 'conversations',
+};
+
 export function createMessageRouter(sendToRelay, options = {}) {
 
   // Usage API cache (5-minute TTL to avoid rate limiting)
@@ -351,6 +365,25 @@ export function createMessageRouter(sendToRelay, options = {}) {
 
     const respond = (status, responseBody) => {
       sendToRelay(MSG.RESPONSE, { status, body: responseBody }, { id });
+
+      // A response carries an id, so only the client that asked receives it —
+      // every other canvas stayed unaware of the new pane until someone
+      // reloaded, which is how two people end up placing panes on top of each
+      // other. Creates and deletes are therefore also announced to everyone.
+      //
+      // Deliberately only the id and type: the receiving client fetches the
+      // pane itself through the same discovery path it uses on load, rather
+      // than trusting a second, parallel construction of the pane object.
+      if (status < 300) {
+        const paneType = PANE_CREATE_PATHS[path];
+        if (method === 'POST' && paneType && responseBody?.id) {
+          sendToRelay(MSG.PANE_CREATED, { paneType, paneId: responseBody.id });
+        }
+        const deleted = method === 'DELETE' && path.match(/^\/api\/([a-z-]+)\/([^/]+)$/);
+        if (deleted && PANE_CREATE_PATHS[`/api/${deleted[1]}`]) {
+          sendToRelay(MSG.PANE_CLOSED, { paneType: PANE_CREATE_PATHS[`/api/${deleted[1]}`], paneId: deleted[2] });
+        }
+      }
     };
 
     try {
