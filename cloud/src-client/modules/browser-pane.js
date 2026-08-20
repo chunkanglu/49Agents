@@ -218,6 +218,26 @@ export function renderBrowserPane(paneData) {
   return pane;
 }
 
+/**
+ * Ask the agent to bring this pane's browser back up.
+ *
+ * Called when an agent reconnects: its panes are records with no Chrome behind
+ * them, and browser:attach is otherwise only sent once, when the pane is first
+ * rendered. Sends the size the pane currently occupies rather than a remembered
+ * one, since the window may have been resized while the agent was away.
+ */
+export function reattachBrowserPane(paneId) {
+  const entry = browserPanes.get(paneId);
+  const paneEl = document.getElementById(`pane-${paneId}`);
+  if (!entry || !paneEl) return;
+
+  const content = paneEl.querySelector('.browser-content');
+  const width = Math.max(200, Math.round(content?.clientWidth || entry.lastViewport.width));
+  const height = Math.max(200, Math.round(content?.clientHeight || entry.lastViewport.height));
+  entry.lastViewport = { width, height };
+  send(paneId, 'browser:attach', { width, height, deviceScaleFactor: scaleFactorFor() });
+}
+
 export function destroyBrowserPane(paneId) {
   const entry = browserPanes.get(paneId);
   if (!entry) return;

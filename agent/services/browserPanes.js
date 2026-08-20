@@ -69,7 +69,21 @@ export function normaliseUrl(input) {
   if (!raw) return BLANK_URL;
   if (raw === BLANK_URL) return raw;
 
-  const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  // "localhost:3000" is a host and a port, not a scheme and a path — but it
+  // matches a naive scheme regex, and that made every local dev server come
+  // back as "Refusing to open localhost:". A scheme is only taken as such when
+  // it is followed by //, or when it is one of the schemeless forms that never
+  // is (about:blank, javascript:, data:, mailto:).
+  const hasScheme =
+    /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ||
+    /^(about|javascript|data|mailto|file|chrome|view-source|blob):/i.test(raw);
+
+  // Bare hosts default to https, except where https is the wrong guess: a dev
+  // server on localhost or a machine on the LAN or tailnet is almost never
+  // serving TLS, and guessing https there fails with a handshake error rather
+  // than loading the page the user asked for.
+  const LOCAL_HOST = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?|0\.0\.0\.0|[^/]*\.local|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+)(:\d+)?(\/|$)/i;
+  const withScheme = hasScheme ? raw : `${LOCAL_HOST.test(raw) ? 'http' : 'https'}://${raw}`;
 
   let parsed;
   try {
@@ -311,7 +325,7 @@ export class BrowserPaneService extends EventEmitter {
   // ── tabs ────────────────────────────────────────────────────────────────
 
   async newTab(paneId, url) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     const targetId = await this._openTab(pane, normaliseUrl(url), { activate: true });
     this._emitTabs(pane);
     this.persist();
@@ -319,7 +333,7 @@ export class BrowserPaneService extends EventEmitter {
   }
 
   async closeTab(paneId, tabId) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     if (!pane.tabs.has(tabId)) return;
 
     await pane.chrome.cdp.send('Target.closeTarget', { targetId: tabId }).catch(() => {});
@@ -341,7 +355,7 @@ export class BrowserPaneService extends EventEmitter {
   }
 
   async selectTab(paneId, tabId) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     if (!pane.tabs.has(tabId) || pane.activeTabId === tabId) return;
     await this._activate(pane, tabId);
     this._emitTabs(pane);
@@ -351,7 +365,7 @@ export class BrowserPaneService extends EventEmitter {
   // ── navigation ──────────────────────────────────────────────────────────
 
   async navigate(paneId, url) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     const session = this._activeSession(pane);
     await pane.chrome.cdp.send('Page.navigate', { url: normaliseUrl(url) }, session);
   }
@@ -360,12 +374,12 @@ export class BrowserPaneService extends EventEmitter {
   async goForward(paneId) { await this._historyStep(paneId, 1); }
 
   async reload(paneId) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     await pane.chrome.cdp.send('Page.reload', {}, this._activeSession(pane));
   }
 
   async _historyStep(paneId, delta) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     const session = this._activeSession(pane);
     const history = await pane.chrome.cdp.send('Page.getNavigationHistory', {}, session);
     const index = history.currentIndex + delta;
@@ -380,7 +394,7 @@ export class BrowserPaneService extends EventEmitter {
   // ── input and viewport ──────────────────────────────────────────────────
 
   async setViewport(paneId, width, height, deviceScaleFactor = 1) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     pane.viewport = {
       width: clamp(Math.round(width), 200, MAX_VIEWPORT.width),
       height: clamp(Math.round(height), 200, MAX_VIEWPORT.height),
@@ -396,17 +410,17 @@ export class BrowserPaneService extends EventEmitter {
    * bug, so the conversion deliberately lives in one place, the client.
    */
   async dispatchMouse(paneId, event) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     await pane.chrome.cdp.send('Input.dispatchMouseEvent', event, this._activeSession(pane));
   }
 
   async dispatchKey(paneId, event) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     await pane.chrome.cdp.send('Input.dispatchKeyEvent', event, this._activeSession(pane));
   }
 
   async insertText(paneId, text) {
-    const pane = this._requireLive(paneId);
+    const pane = await this._ensureAttached(paneId);
     await pane.chrome.cdp.send('Input.insertText', { text }, this._activeSession(pane));
   }
 
@@ -417,6 +431,23 @@ export class BrowserPaneService extends EventEmitter {
     if (!pane) throw new Error('Browser pane not found');
     if (!pane.chrome) throw new Error('Browser pane is not attached');
     return pane;
+  }
+
+  /**
+   * Attach a pane that has no Chrome yet, so an action can proceed.
+   *
+   * After an agent restart every pane is back as a record with no browser, and
+   * a canvas that was already open never sends another browser:attach — so
+   * clicking, typing and opening tabs all failed with "Browser pane is not
+   * attached", for ever, with the log filling up and the pane looking frozen.
+   * The client re-attaches on agent:online now, but anything that arrives
+   * before that heals itself here rather than erroring.
+   */
+  async _ensureAttached(paneId) {
+    const pane = this.panes.get(paneId);
+    if (!pane) throw new Error('Browser pane not found');
+    if (!pane.chrome) await this.attach(paneId, pane.viewport);
+    return this._requireLive(paneId);
   }
 
   _activeSession(pane) {
@@ -630,6 +661,20 @@ export class BrowserPaneService extends EventEmitter {
       }
       this._emitTabs(pane);
       this.persist();
+    });
+
+    // A renderer that crashes stops painting and says nothing else: the pane
+    // simply stops updating, which is indistinguishable from a page that is
+    // busy. Chrome reports it at the browser level with the target id, so the
+    // pane can say so and reload the tab rather than sit there frozen.
+    cdp.on('Target.targetCrashed', ({ targetId, status }) => {
+      const tab = pane.tabs.get(targetId);
+      if (!tab) return;
+      this.emit('error', {
+        paneId: pane.id,
+        message: `The page crashed (${status || 'unknown'}). Reloading.`,
+      });
+      cdp.send('Page.reload', {}, tab.sessionId).catch(() => {});
     });
 
     // A page's own alert()/confirm() blocks its renderer until something
