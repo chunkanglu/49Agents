@@ -260,6 +260,15 @@ export function createMessageRouter(sendToRelay, options = {}) {
       wiredTerminals.delete(payload.terminalId);
       await terminalManager.closeTerminal(payload.terminalId);
       sendToRelay(MSG.TERMINAL_CLOSED, { terminalId: payload.terminalId });
+
+      // TERMINAL_CLOSED means two different things and the difference matters
+      // to everyone else: a terminal that EXITED leaves a pane you can
+      // reconnect or resume, which is why other canvases show an overlay
+      // rather than removing it. This path is a person deleting the pane, so
+      // it is gone — without saying so, the other canvases keep a pane whose
+      // tmux session no longer exists, offer to reconnect it, and quietly
+      // resurrect a terminal the first person believes they closed.
+      sendToRelay(MSG.PANE_CLOSED, { paneType: 'terminal', paneId: payload.terminalId });
     },
 
     [MSG.TERMINAL_DETACH]: (payload) => {
