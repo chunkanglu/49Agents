@@ -756,7 +756,7 @@ export function initTerminal(paneEl, paneData) {
   _ctx.terminals.set(paneData.id, { xterm, fitAddon });
 
   // Handle terminal input — send immediately for lowest latency.
-  xterm.onData((data) => {
+  function sendTerminalInput(data) {
     // Don't forward ANY input until terminal:attached is received.
     // During the ttyd/tmux handshake the pty is still in cooked mode
     // (echo ON), so any xterm auto-responses (DA, CPR, etc.) would be
@@ -776,6 +776,34 @@ export function initTerminal(paneEl, paneData) {
     } else {
       sendWs('terminal:input', { terminalId: paneData.id, data: encoded }, paneData.agentId);
     }
+  }
+  xterm.onData(sendTerminalInput);
+
+  // Shift+Enter must not arrive at the application as a bare Enter.
+  //
+  // xterm.js implements neither the kitty keyboard protocol nor xterm's
+  // modifyOtherKeys, so it encodes Shift+Enter identically to Enter: a lone \r.
+  // Every TUI that reads Shift+Enter as "insert a newline" (Claude Code, pi)
+  // therefore sees a submit, and a half-written prompt gets sent. Nothing
+  // downstream can recover the distinction, because by then the shift is gone —
+  // so the sequence has to be synthesised here.
+  //
+  // \e[13;2u is the CSI-u encoding, and it is what the agent's tmux is now
+  // configured to speak (extended-keys on, extended-keys-format csi-u). Both
+  // Claude Code and pi were measured accepting it and inserting a newline.
+  //
+  // \e\r — the classic esc+enter mapping that terminal-setup writes for
+  // iTerm2 — would be wrong here: with the kitty protocol inactive, pi reads
+  // that as alt+enter, which queues a follow-up message instead.
+  const SHIFT_ENTER_CSI_U = '\x1b[13;2u';
+  xterm.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    if (e.key !== 'Enter' || !e.shiftKey) return true;
+    // Leave the other modifier combinations to xterm — only plain Shift+Enter
+    // has an agreed meaning to graft on.
+    if (e.ctrlKey || e.altKey || e.metaKey) return true;
+    sendTerminalInput(SHIFT_ENTER_CSI_U);
+    return false;
   });
 
   // Handle terminal resize — send to server and track last-sent size
