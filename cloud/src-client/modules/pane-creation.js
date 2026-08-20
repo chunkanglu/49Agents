@@ -1199,7 +1199,15 @@ export async function showGitRepoPicker(device, placementPos, thenPlace = false,
 // a browser does. The iframe pane asks up front because it has nowhere else to
 // put the question.
 export async function createBrowserPane(placementPos) {
-  const position = calcPlacementPos(placementPos, PANE_DEFAULTS['browser'].width, PANE_DEFAULTS['browser'].height);
+  // calcPlacementPos takes HALF the pane size, not the size: the placement
+  // click reports the ghost's centre, and the helper subtracts these to get the
+  // top-left. Passing the full size drops the pane half its width and height
+  // away from where the outline was.
+  const position = calcPlacementPos(
+    placementPos,
+    PANE_DEFAULTS['browser'].width / 2,
+    PANE_DEFAULTS['browser'].height / 2
+  );
 
   try {
     const data = await agentRequest('POST', '/api/browser-panes', {
