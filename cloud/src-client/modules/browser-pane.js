@@ -240,6 +240,22 @@ function viewportOf(paneEl) {
   };
 }
 
+/**
+ * How many device pixels Chrome should render per CSS pixel.
+ *
+ * Rendering at 1 and then displaying on a Retina screen means the canvas is
+ * upscaled 2x by the compositor, which is the whole reason text looked soft.
+ * The board's zoom multiplies that again, so it is folded in — zoom past 1 and
+ * the pane is being magnified as well.
+ *
+ * Capped at 2: pixels are quadratic in this number, and a frame that grows past
+ * the relay's 1MB limit disconnects the agent rather than merely looking bad.
+ */
+function scaleFactorFor() {
+  const zoom = _ctx.state?.zoom || 1;
+  return Math.min(2, Math.max(1, (window.devicePixelRatio || 1) * zoom));
+}
+
 let resizeTimer = null;
 function syncViewport(paneData, { attach }) {
   const paneEl = document.getElementById(`pane-${paneData.id}`);
@@ -251,14 +267,14 @@ function syncViewport(paneData, { attach }) {
   entry.lastViewport = { width, height };
 
   if (attach) {
-    send(paneData.id, 'browser:attach', { width, height, deviceScaleFactor: 1 });
+    send(paneData.id, 'browser:attach', { width, height, deviceScaleFactor: scaleFactorFor() });
     return;
   }
   // Debounced: a drag-resize fires continuously, and each resize makes Chrome
   // relayout the page.
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
-    send(paneData.id, 'browser:resize', { width, height, deviceScaleFactor: 1 });
+    send(paneData.id, 'browser:resize', { width, height, deviceScaleFactor: scaleFactorFor() });
   }, 120);
 }
 
@@ -302,6 +318,9 @@ function wireInput(paneEl, paneData) {
     // rect is already in screen pixels including every enclosing scale, so
     // dividing by its own dimensions gives a scale-free fraction of the
     // viewport, which then maps onto the size the agent rendered.
+    // Fractions of the viewport, so this is unaffected by the device pixel
+    // ratio and by the board's zoom: CDP wants CSS pixels of the emulated
+    // viewport, which is what lastViewport holds.
     const fx = (e.clientX - rect.left) / rect.width;
     const fy = (e.clientY - rect.top) / rect.height;
     return {
