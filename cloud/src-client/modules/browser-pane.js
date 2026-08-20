@@ -343,7 +343,12 @@ function wireInput(paneEl, paneData) {
   });
 
   canvas.addEventListener('mouseup', (e) => {
-    e.stopPropagation();
+    // Deliberately NOT stopPropagation. Canvas gestures (middle-drag pan,
+    // rubber-band select) start on a container-level capture listener and end
+    // on a document-level mouseup, so swallowing mouseup here strands whichever
+    // one is in flight — the pan never releases and the cursor stays grabbing
+    // with no way out. Mousedown is still stopped, which is what keeps a click
+    // inside the page from dragging the pane.
     buttonsDown &= ~(1 << e.button);
     send(paneData.id, 'browser:input', {
       kind: 'mouse',

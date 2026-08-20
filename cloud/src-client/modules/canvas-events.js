@@ -173,6 +173,10 @@ export function handleMiddleMousePan(e) {
 // Right mouse button pan — works even over panes (terminals, editors, etc.)
 export function handleRightMousePan(e) {
   if (e.button !== 2) return;
+  // A browser pane renders a real page, and right-click belongs to that page —
+  // it is how a site opens its own context menu. Panning stays available over
+  // every other pane type, and over this one via middle-drag or Tab+drag.
+  if (e.target.closest?.('.browser-canvas')) return;
   e.preventDefault();
   e.stopPropagation();
 
