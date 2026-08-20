@@ -256,6 +256,8 @@ export class BrowserPaneService extends EventEmitter {
 
     if (pane.frameTimer) clearTimeout(pane.frameTimer);
     pane.attached = false;
+    pane.pendingFrame = null;
+    this._unwireBrowserEvents(pane);
 
     if (pane.chrome) {
       for (const targetId of pane.tabs.keys()) {
@@ -574,7 +576,32 @@ export class BrowserPaneService extends EventEmitter {
   _wireBrowserEvents(pane) {
     const cdp = pane.chrome.cdp;
 
-    cdp.on('Page.screencastFrame', (params, sessionId) => {
+    // These listeners live on a connection SHARED by every pane on the profile,
+    // and several of the events are browser-level rather than per-target, so
+    // every pane's handler runs for every pane's event. Two consequences, both
+    // of which bit: they must be removed when the pane goes away, or each pane
+    // ever opened leaves six behind for the life of the process; and one that
+    // is already in flight can still arrive after the pane is deleted, which
+    // crashed the agent outright —
+    //
+    //   TypeError: Cannot read properties of null (reading 'tabs')
+    //       at BrowserPaneService._emitTabs
+    //
+    // because describe() returns null for a pane no longer in the map. Wiring
+    // through this helper gives both the guard and the handle to unwire.
+    this._unwireBrowserEvents(pane);
+    const listeners = [];
+    const on = (event, handler) => {
+      const guarded = (...args) => {
+        if (!this.panes.has(pane.id)) return undefined;
+        return handler(...args);
+      };
+      cdp.on(event, guarded);
+      listeners.push([event, guarded]);
+    };
+    pane.cdpListeners = { cdp, listeners };
+
+    on('Page.screencastFrame', (params, sessionId) => {
       const tab = pane.tabs.get(pane.activeTabId);
       if (!tab || tab.sessionId !== sessionId) return;
 
@@ -611,7 +638,7 @@ export class BrowserPaneService extends EventEmitter {
 
     // One event stream carries title and URL for every tab, which is what the
     // tab strip needs; polling Target.getTargets would be the alternative.
-    cdp.on('Target.targetInfoChanged', ({ targetInfo }) => {
+    on('Target.targetInfoChanged', ({ targetInfo }) => {
       const tab = pane.tabs.get(targetInfo.targetId);
       if (!tab) return;
       tab.url = targetInfo.url;
@@ -629,7 +656,7 @@ export class BrowserPaneService extends EventEmitter {
     // rather than a navigation. Adopting it as a tab in the pane that opened it
     // is what a browser does; without this the click appears to do nothing and
     // an invisible page runs on in the background.
-    cdp.on('Target.targetCreated', async ({ targetInfo }) => {
+    on('Target.targetCreated', async ({ targetInfo }) => {
       if (targetInfo.type !== 'page') return;
       if (!targetInfo.openerId || !pane.tabs.has(targetInfo.openerId)) return;
       if (pane.tabs.has(targetInfo.targetId)) return;
@@ -652,7 +679,7 @@ export class BrowserPaneService extends EventEmitter {
       }
     });
 
-    cdp.on('Target.targetDestroyed', ({ targetId }) => {
+    on('Target.targetDestroyed', ({ targetId }) => {
       if (!pane.tabs.has(targetId)) return;
       pane.tabs.delete(targetId);
       if (pane.activeTabId === targetId) {
@@ -667,7 +694,7 @@ export class BrowserPaneService extends EventEmitter {
     // simply stops updating, which is indistinguishable from a page that is
     // busy. Chrome reports it at the browser level with the target id, so the
     // pane can say so and reload the tab rather than sit there frozen.
-    cdp.on('Target.targetCrashed', ({ targetId, status }) => {
+    on('Target.targetCrashed', ({ targetId, status }) => {
       const tab = pane.tabs.get(targetId);
       if (!tab) return;
       this.emit('error', {
@@ -682,16 +709,30 @@ export class BrowserPaneService extends EventEmitter {
     // show a dialog in. Left alone, the tab stops painting and every later CDP
     // command against it times out. Dismissing keeps the tab usable; the cost
     // is that a confirm() always reads as Cancel.
-    cdp.on('Page.javascriptDialogOpening', (params, sessionId) => {
+    on('Page.javascriptDialogOpening', (params, sessionId) => {
       cdp.sendNoReply('Page.handleJavaScriptDialog', { accept: false }, sessionId);
       this.emit('dialog', { paneId: pane.id, type: params.type, message: params.message });
     });
   }
 
+  /** Detach this pane's listeners from the shared CDP connection. Idempotent. */
+  _unwireBrowserEvents(pane) {
+    const wired = pane.cdpListeners;
+    if (!wired) return;
+    for (const [event, handler] of wired.listeners) {
+      wired.cdp.off(event, handler);
+    }
+    pane.cdpListeners = null;
+  }
+
   _emitTabs(pane) {
+    const info = this.describe(pane.id);
+    // Gone between the event and here: closePane removes the pane from the map
+    // while Chrome may still be delivering events about its tabs.
+    if (!info) return;
     this.emit('tabs', {
       paneId: pane.id,
-      tabs: this.describe(pane.id).tabs,
+      tabs: info.tabs,
       activeTabId: pane.activeTabId,
     });
   }
