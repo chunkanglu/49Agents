@@ -43,6 +43,20 @@ const BINARY_CANDIDATES = [
 
 const LAUNCH_TIMEOUT_MS = 20000;
 
+// Device pixels per CSS pixel that Chrome renders at.
+//
+// Page.startScreencast captures in DIPs and ignores the deviceScaleFactor from
+// Emulation.setDeviceMetricsOverride — that call changes what the *page* sees
+// in window.devicePixelRatio, but the frame still comes back at CSS size.
+// Measured on a 1000x700 viewport: dsf via Emulation gives a 1000x700 JPEG,
+// this flag gives 2000x1400. Displayed on any HiDPI screen the first is
+// upscaled by the compositor, which is what made text look soft.
+//
+// It is a launch flag, so it applies to every pane on the profile. 2 covers
+// current Retina and most high-DPI displays; a 1x client simply downsamples,
+// which costs bandwidth but never looks worse.
+export const CHROME_DEVICE_SCALE = 2;
+
 /**
  * Locate a Chromium-family binary. CHROME_BIN wins and suppresses the search,
  * so an unusual install can be pointed at directly.
@@ -77,6 +91,7 @@ export function buildChromeArgs(profileDir) {
     `--user-data-dir=${profileDir}`,
     '--no-first-run',
     '--no-default-browser-check',
+    `--force-device-scale-factor=${CHROME_DEVICE_SCALE}`,
     // Nothing renders on a real display, so keep Chrome from throttling work
     // in what it believes are hidden windows — the pane is exactly that.
     '--disable-backgrounding-occluded-windows',
@@ -172,12 +187,21 @@ class ChromeInstance extends EventEmitter {
       try {
         this.cdp = new CdpConnection(existing);
         await this.cdp.connect();
+        // Connecting is not enough. A Chrome that is shutting down still
+        // accepts the socket and then drops it, which happens whenever an
+        // agent restarts fast enough to overlap its predecessor's exit. One
+        // round trip proves the browser is actually alive and serving.
+        await this.cdp.send('Browser.getVersion');
         this.adopted = true;
         this.adoptedPid = this._lockHolderPid();
+        // Same safety as the spawned path: if this browser goes away, the
+        // instance must leave the pool rather than be handed to another pane.
+        this.cdp.once('close', () => this.emit('exit', { code: null, signal: 'socket-closed' }));
         return this;
       } catch {
-        // The file outlived the browser. Nothing is listening, so the lock
-        // beside it is stale too.
+        // Nothing is listening, or what answered is on its way out. Either
+        // way the lock beside the port file is stale.
+        if (this.cdp) this.cdp.close();
         this.cdp = null;
         this._clearStaleLock();
       }
@@ -207,6 +231,11 @@ class ChromeInstance extends EventEmitter {
     this.proc.once('exit', (code, signal) => {
       this.emit('exit', { code, signal });
     });
+
+    // A crash or an outside `kill` closes the socket without an exit event we
+    // own (an adopted browser has no child handle at all). Either way the
+    // instance is unusable and must not be handed to the next pane.
+    this.cdp.once('close', () => this.emit('exit', { code: null, signal: 'socket-closed' }));
 
     return this;
   }
@@ -265,6 +294,12 @@ class ChromeInstance extends EventEmitter {
     if (this.proc && this.proc.exitCode === null) this.proc.kill();
     this.cdp = null;
     this.proc = null;
+
+    // Remove the endpoint file we are about to stop honouring. Chrome deletes
+    // it on exit, but not instantly, and a fast restart would otherwise adopt
+    // the corpse: the socket still connects for a moment, so even a probe can
+    // pass, and every command after that fails with "CDP connection closed".
+    this._clearStaleLock();
   }
 }
 
