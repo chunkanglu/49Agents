@@ -581,6 +581,52 @@ export function initTerminal(paneEl, paneData) {
       if (dragDepth === 0) paneEl.classList.remove('terminal-drop-target');
     });
 
+    // Cmd/Ctrl+V with an image on the clipboard.
+    //
+    // xterm handles paste natively, but only ever forwards text/plain — an
+    // image yields an empty string, so the paste silently did nothing. The
+    // bytes are right here in the event, and the agent already knows how to
+    // turn them into a temp file and type its path (terminal:pasteImage, the
+    // same path drag-and-drop uses).
+    //
+    // That is also exactly what the TUI does for itself: pressing Ctrl+V in a
+    // real terminal makes pi read the host clipboard, write
+    // /var/folders/.../pi-clipboard-<uuid>.png, and insert that path. Same
+    // shape, except the bytes come from whoever is looking at the canvas
+    // rather than from the host's own clipboard — which is the only version
+    // that can work for a teammate on another machine.
+    //
+    // Capture phase on the container, so a paste carrying an image is claimed
+    // before xterm's own handler on the textarea sees it. Text pastes fall
+    // through untouched.
+    container.addEventListener('paste', async (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const imageItem = items.find((i) => i.kind === 'file' && i.type.startsWith('image/'));
+      if (!imageItem) return;
+
+      const file = imageItem.getAsFile();
+      if (!file) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const termRef = _ctx.terminals.get(paneData.id);
+      if (!termRef || !termRef._attached) return;
+
+      const base64 = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1] || '');
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+      });
+      if (!base64) return;
+
+      sendWs('terminal:pasteImage', {
+        terminalId: paneData.id,
+        imageData: base64,
+        mimeType: file.type,
+      }, paneData.agentId);
+    }, true);
+
     container.addEventListener('drop', async (e) => {
       if (!isFileDrag(e)) return;
       e.preventDefault();
